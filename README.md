@@ -230,6 +230,11 @@ Two versions included in `scripts/`:
 
 ### Setup
 
+**VPS deployment** (Hetzner, `178.104.163.255`):
+```bash
+ssh root@178.104.163.255
+```
+
 1. Copy `.env.example` to `.env` and fill in your Alpaca + Telegram credentials
 2. Edit `scripts/alpaca-config.json` for your symbols, session times, and risk settings
 3. Start in dry-run mode (default): `node scripts/alpaca-bot.js`

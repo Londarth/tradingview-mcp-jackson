@@ -3,9 +3,11 @@ set -euo pipefail
 
 # ─── Scalp Bot VPS Setup ───
 # Run once on a fresh Ubuntu 22.04+ VPS
+# VPS: Hetzner 178.104.163.255
+# SSH:  ssh root@178.104.163.255
 # Usage: bash scripts/setup-vps.sh
 
-REPO_DIR="${REPO_DIR:-/root/tradingview-mcp-jackson}"
+REPO_DIR="${REPO_DIR:-/root/tradingview-mcp}"
 NODE_MAJOR="${NODE_MAJOR:-20}"
 
 echo "=== Scalp Bot VPS Setup ==="
