@@ -1,0 +1,96 @@
+//@version=6
+strategy("VWAP Reversion Scalp", overlay=true, max_bars_back=500, default_qty_type=strategy.percent_of_equity, default_qty_value=1, initial_capital=200, currency=currency.GBP)
+
+// ─── Inputs ───
+showLabels    = input.bool(true, "Show Entry Labels", group="Display")
+tradingStart  = input.int(945, "Session Start (HHMM)", group="Session")
+tradingEnd    = input.int(1130, "Session End (HHMM)", group="Session")
+
+// Reversion params
+atrLength     = input.int(14, "ATR Length", minval=5, maxval=50, group="Reversion")
+atrDistMult   = input.float(1.5, "Distance from VWAP (ATR×)", minval=0.5, maxval=3.0, step=0.1, group="Reversion", tooltip="Enter when price is this many ATRs away from VWAP")
+stopAtrMult   = input.float(0.5, "Stop ATR Multiplier", minval=0.2, maxval=1.5, step=0.1, group="Exits")
+
+// Filters
+useRsiFilter  = input.bool(true, "Require RSI Filter", group="Filters")
+rsiLength     = input.int(14, "RSI Length", group="Filters")
+rsiMaxLong    = input.int(70, "RSI Max for Longs", minval=50, maxval=80, group="Filters")
+rsiMinShort   = input.int(30, "RSI Min for Shorts", minval=20, maxval=50, group="Filters")
+useVolFilter  = input.bool(true, "Require Volume Filter", group="Filters")
+volLength     = input.int(12, "Volume MA Length", group="Filters")
+cooldownBars  = input.int(10, "Cooldown Bars Between Trades", minval=1, maxval=30, group="Filters")
+
+// ─── Session helpers ───
+timeAllowed(t) =>
+    hhmm = hour(t) * 100 + minute(t)
+    hhmm >= tradingStart and hhmm < tradingEnd
+
+isSessionStart(t) =>
+    hhmm = hour(t) * 100 + minute(t)
+    hhmm == tradingStart
+
+// ─── Core calculations ───
+vwapVal  = ta.vwap(hlc3)
+atr5m    = ta.atr(atrLength)
+rsiVal   = ta.rsi(close, rsiLength)
+volMA    = ta.sma(volume, volLength)
+volOk    = not useVolFilter or (volMA > 0 and volume > volMA)
+
+// Distance from VWAP in ATR units
+distFromVwap = (close - vwapVal) / (atr5m > 0 ? atr5m : 1)
+
+// ─── Entry conditions ───
+rsiOkLong   = not useRsiFilter or rsiVal < rsiMaxLong
+rsiOkShort  = not useRsiFilter or rsiVal > rsiMinShort
+
+longSignal  = distFromVwap <= -atrDistMult and rsiOkLong and volOk
+shortSignal = distFromVwap >=  atrDistMult and rsiOkShort and volOk
+
+// ─── State tracking ───
+var int  barsSinceLast = 999
+var bool tradedToday   = false
+
+if isSessionStart(time)
+    barsSinceLast := 999
+    tradedToday   := false
+
+if barsSinceLast < 999
+    barsSinceLast := barsSinceLast + 1
+
+// ─── Entries ───
+canTrade = timeAllowed(time) and strategy.position_size == 0 and barsSinceLast >= cooldownBars
+
+if longSignal and canTrade
+    stopLevel  = close - atr5m * stopAtrMult
+    tpLevel    = vwapVal
+    strategy.entry("Long", strategy.long)
+    strategy.exit("TP", "Long", stop=stopLevel, limit=tpLevel)
+    barsSinceLast := 0
+    if showLabels
+        label.new(bar_index, low, "L", color=color.green, textcolor=color.white, style=label.style_label_up, size=size.small)
+
+if shortSignal and canTrade
+    stopLevel  = close + atr5m * stopAtrMult
+    tpLevel    = vwapVal
+    strategy.entry("Short", strategy.short)
+    strategy.exit("TP", "Short", stop=stopLevel, limit=tpLevel)
+    barsSinceLast := 0
+    if showLabels
+        label.new(bar_index, high, "S", color=color.red, textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// ─── Auto-close at session end ───
+if not timeAllowed(time) and strategy.position_size != 0
+    strategy.close_all(comment="Session End")
+
+// ─── Plots ───
+plot(vwapVal, "VWAP", color=color.new(color.yellow, 20), linewidth=2)
+
+// Plot the entry zones
+upperZone = vwapVal + atr5m * atrDistMult
+lowerZone = vwapVal - atr5m * atrDistMult
+plot(upperZone, "Short Zone", color=color.new(color.red, 60), style=plot.style_stepline, linewidth=1)
+plot(lowerZone, "Long Zone",  color=color.new(color.green, 60), style=plot.style_stepline, linewidth=1)
+
+// Highlight when price is in entry zone
+bgcolor(distFromVwap <= -atrDistMult ? color.new(color.green, 92) : na, title="Long Zone Highlight")
+bgcolor(distFromVwap >=  atrDistMult ? color.new(color.red, 92) : na, title="Short Zone Highlight")
