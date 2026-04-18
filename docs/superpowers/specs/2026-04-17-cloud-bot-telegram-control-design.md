@@ -16,12 +16,12 @@ VPS ($5/month — Hetzner, DigitalOcean, or Linode)
     ├── telegram-ctl.js  (always-on Node process, ~30MB RAM)
     │     └── Polls Telegram for commands, spawns/kills bot via PM2
     ├── PM2 process manager
-    │     └── Manages alpaca-bot.js — start, stop, restart, crash recovery, logs
-    ├── alpaca-bot.js   (runs during session hours)
+    │     └── Manages touch-turn-bot.js — start, stop, restart, crash recovery, logs
+    ├── touch-turn-bot.js   (runs during session hours)
     │     └── Connects to Alpaca API, trades, sends notification messages
     └── cron jobs
-          ├── 9:25 AM ET Mon-Fri → pm2 start alpaca-bot
-          └── 11:05 AM ET Mon-Fri → pm2 stop alpaca-bot
+          ├── 9:25 AM ET Mon-Fri → pm2 start touch-turn-bot
+          └── 11:05 AM ET Mon-Fri → pm2 stop touch-turn-bot
 ```
 
 The Telegram listener is the control plane — it stays up even if the trading bot crashes, so you can always reach it.
@@ -36,9 +36,9 @@ Always-on Node.js process that polls Telegram using `node-telegram-bot-api`.
 
 | Command | Action | Reply |
 |---------|--------|-------|
-| `/start` | `pm2 start alpaca-bot` (or restart if already in PM2) | Mode, symbols, session time |
-| `/stop` | `pm2 stop alpaca-bot` | "Bot stopped" |
-| `/status` | `pm2 describe alpaca-bot` + read last 10 from trade-log.json | Running/stopped, uptime, recent trades |
+| `/start` | `pm2 start touch-turn-bot` (or restart if already in PM2) | Mode, symbols, session time |
+| `/stop` | `pm2 stop touch-turn-bot` | "Bot stopped" |
+| `/status` | `pm2 describe touch-turn-bot` + read last 10 from trade-log.json | Running/stopped, uptime, recent trades |
 | `/help` | Lists available commands | Command list |
 
 **Auth**: Only messages from `TELEGRAM_CHAT_ID` are processed. All other messages are silently ignored.
@@ -50,9 +50,9 @@ Always-on Node.js process that polls Telegram using `node-telegram-bot-api`.
 ```js
 module.exports = {
   apps: [{
-    name: 'alpaca-bot',
-    script: 'scripts/alpaca-bot.js',
-    cwd: '/root/tradingview-mcp-jackson',
+    name: 'touch-turn-bot',
+    script: 'scripts/touch-turn-bot.js',
+    cwd: '/root/scalp-bot',
     env: { NODE_ENV: 'production' },
     max_restarts: 10,
     restart_delay: 5000,
@@ -77,11 +77,11 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/node /root/tradingview-mcp-jackson/scripts/telegram-ctl.js
+ExecStart=/usr/bin/node /root/scalp-bot/scripts/telegram-ctl.js
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
-WorkingDirectory=/root/tradingview-mcp-jackson
+WorkingDirectory=/root/scalp-bot
 
 [Install]
 WantedBy=multi-user.target
@@ -90,8 +90,8 @@ WantedBy=multi-user.target
 ### 4. Cron Jobs — Session Scheduling
 
 ```cron
-25 9 * * 1-5 cd /root/tradingview-mcp-jackson && pm2 start alpaca-bot
-5 11 * * 1-5 cd /root/tradingview-mcp-jackson && pm2 stop alpaca-bot
+25 9 * * 1-5 cd /root/scalp-bot && pm2 start touch-turn-bot
+5 11 * * 1-5 cd /root/scalp-bot && pm2 stop touch-turn-bot
 ```
 
 - **9:25 AM ET** — starts bot 5 min before session, gives time to connect, fetch ATR, send morning brief
@@ -101,7 +101,7 @@ Timezone: VPS should be set to `America/New_York` or cron should use `TZ=America
 
 ### 5. No Changes to Bot Behavior
 
-The trading bot itself (`alpaca-bot.js`) needs **no modifications**. It continues to:
+The trading bot itself (`touch-turn-bot.js`) needs **no modifications**. It continues to:
 - Force-close positions at session end (11:00 AM ET)
 - Send trade signals, morning brief, EOD report via Telegram
 - Log to `trade-log.json`
@@ -121,7 +121,7 @@ Telegram message from user
 
 ```
 Cron trigger (9:25 AM)
-    → pm2 start alpaca-bot
+    → pm2 start touch-turn-bot
     → Bot connects to Alpaca, starts trading session
     → Morning brief sent via Telegram
     → Trades execute, notifications sent
@@ -141,7 +141,7 @@ Cron trigger (9:25 AM)
 
 1. Create VPS (Hetzner/DigitalOcean/Linode, Ubuntu 22.04+, $5/month)
 2. SSH in, install Node.js 20+ and PM2
-3. Clone repo to `/root/tradingview-mcp-jackson`
+3. Clone repo to `/root/scalp-bot`
 4. Copy `.env` with Alpaca + Telegram credentials
 5. Install dependencies: `npm install`
 6. Copy `ecosystem.config.cjs` to project root

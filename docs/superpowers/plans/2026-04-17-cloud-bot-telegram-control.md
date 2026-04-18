@@ -15,7 +15,7 @@
 | File | Responsibility |
 |------|---------------|
 | `scripts/telegram-ctl.js` | Telegram command listener: polls for messages, auth check, routes commands to PM2 |
-| `ecosystem.config.cjs` | PM2 process definition for `alpaca-bot` |
+| `ecosystem.config.cjs` | PM2 process definition for `touch-turn-bot` |
 | `scripts/setup-vps.sh` | One-time VPS provisioning script (Node, PM2, clone, systemd, cron) |
 | `scripts/scalp-bot-ctl.service` | Systemd unit file template for `telegram-ctl.js` |
 | `tests/telegram-ctl.test.js` | Unit tests for command parsing, auth, and status formatting |
@@ -292,7 +292,7 @@ function pm2(cmd) {
 
 async function getBotStatus() {
   try {
-    const { stdout } = await pm2('describe alpaca-bot');
+    const { stdout } = await pm2('describe touch-turn-bot');
     // Extract status from pm2 describe output
     const statusMatch = stdout.match(/status\s*│\s*(\w+)/);
     const uptimeMatch = stdout.match(/uptime\s*│\s*(.+)/);
@@ -344,7 +344,7 @@ async function handleStart() {
 
 async function handleStop() {
   try {
-    await pm2('stop alpaca-bot');
+    await pm2('stop touch-turn-bot');
     await sendTelegram('🛑 <b>Bot stopped</b>');
   } catch (err) {
     await sendTelegram(`❌ Failed to stop bot: ${err.message}`);
@@ -625,8 +625,8 @@ Create `ecosystem.config.cjs` at the project root:
 ```js
 module.exports = {
   apps: [{
-    name: 'alpaca-bot',
-    script: 'scripts/alpaca-bot.js',
+    name: 'touch-turn-bot',
+    script: 'scripts/touch-turn-bot.js',
     cwd: __dirname,
     env: {
       NODE_ENV: 'production',
@@ -636,8 +636,8 @@ module.exports = {
     autorestart: true,
     watch: false,
     log_date_format: 'YYYY-MM-DD HH:mm:ss',
-    error_file: 'logs/alpaca-bot-error.log',
-    out_file: 'logs/alpaca-bot-out.log',
+    error_file: 'logs/touch-turn-bot-error.log',
+    out_file: 'logs/touch-turn-bot-out.log',
     merge_logs: true,
   }],
 };
@@ -686,11 +686,11 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/node /root/tradingview-mcp-jackson/scripts/telegram-ctl.js
+ExecStart=/usr/bin/node /root/scalp-bot/scripts/telegram-ctl.js
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
-WorkingDirectory=/root/tradingview-mcp-jackson
+WorkingDirectory=/root/scalp-bot
 
 [Install]
 WantedBy=multi-user.target
@@ -724,7 +724,7 @@ set -euo pipefail
 # Run once on a fresh Ubuntu 22.04+ VPS
 # Usage: bash scripts/setup-vps.sh
 
-REPO_DIR="${REPO_DIR:-/root/tradingview-mcp-jackson}"
+REPO_DIR="${REPO_DIR:-/root/scalp-bot}"
 NODE_MAJOR="${NODE_MAJOR:-20}"
 
 echo "=== Scalp Bot VPS Setup ==="
@@ -786,7 +786,7 @@ echo ">>> Setting up cron jobs for session scheduling..."
 (crontab -l 2>/dev/null; cat <<CRON
 # Scalp bot session scheduling (ET timezone)
 25 9 * * 1-5 cd $REPO_DIR && pm2 start ecosystem.config.cjs >> /var/log/scalp-bot-cron.log 2>&1
-5 11 * * 1-5 cd $REPO_DIR && pm2 stop alpaca-bot >> /var/log/scalp-bot-cron.log 2>&1
+5 11 * * 1-5 cd $REPO_DIR && pm2 stop touch-turn-bot >> /var/log/scalp-bot-cron.log 2>&1
 CRON
 ) | crontab -
 
@@ -802,8 +802,8 @@ echo "  5. Verify PM2: pm2 list"
 echo ""
 echo "Useful commands:"
 echo "  pm2 list              — Show managed processes"
-echo "  pm2 logs alpaca-bot   — View bot logs"
-echo "  pm2 describe alpaca-bot — Detailed bot status"
+echo "  pm2 logs touch-turn-bot   — View bot logs"
+echo "  pm2 describe touch-turn-bot — Detailed bot status"
 echo "  sudo systemctl status scalp-bot-ctl — Controller status"
 echo "  sudo journalctl -u scalp-bot-ctl -f — Controller logs"
 ```
@@ -841,8 +841,8 @@ The bot can run on a cloud VPS with Telegram-based control. See `docs/superpower
 
 ```bash
 # On a fresh Ubuntu VPS:
-git clone <repo-url> /root/tradingview-mcp-jackson
-cd /root/tradingview-mcp-jackson
+git clone <repo-url> /root/scalp-bot
+cd /root/scalp-bot
 bash scripts/setup-vps.sh
 ```
 
@@ -860,8 +860,8 @@ Only messages from `TELEGRAM_CHAT_ID` (set in `.env`) are processed.
 ### VPS Management
 
 - `pm2 list` — Show managed processes
-- `pm2 logs alpaca-bot` — View bot logs
-- `pm2 describe alpaca-bot` — Detailed bot status
+- `pm2 logs touch-turn-bot` — View bot logs
+- `pm2 describe touch-turn-bot` — Detailed bot status
 - `sudo systemctl status scalp-bot-ctl` — Telegram controller status
 - `sudo journalctl -u scalp-bot-ctl -f` — Controller logs
 ```
@@ -886,7 +886,7 @@ git commit -m "docs: add cloud deployment and Telegram control docs to scalp-bot
 | PM2 management | Task 4 (ecosystem.config.cjs) |
 | Systemd service for telegram-ctl | Task 5 |
 | Cron session scheduling | Task 6 (setup-vps.sh) |
-| No changes to bot behavior | Confirmed — no alpaca-bot.js changes |
+| No changes to bot behavior | Confirmed — no touch-turn-bot.js changes |
 | Security (CHAT_ID auth, no public ports) | Task 3 |
 
 **2. Placeholder scan:** No TBDs, TODOs, or vague "add error handling" steps. All code blocks contain complete implementations.
