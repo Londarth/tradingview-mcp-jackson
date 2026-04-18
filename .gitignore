@@ -1,11 +1,9 @@
 node_modules/
-screenshots/
-scripts/current.pine
 temp_*
 *.log
 discovery-log.json
 .env
 logs/*
 !logs/.gitkeep
+scripts/touch-turn-log.json
 scripts/trade-log.json
-screenshot_*

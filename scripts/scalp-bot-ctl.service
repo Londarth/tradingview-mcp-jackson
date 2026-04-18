@@ -4,11 +4,11 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/node /root/tradingview-mcp-jackson/scripts/telegram-ctl.js
+ExecStart=/usr/bin/node /root/scalp-bot/scripts/telegram-ctl.js
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
-WorkingDirectory=/root/tradingview-mcp-jackson
+WorkingDirectory=/root/scalp-bot
 
 [Install]
 WantedBy=multi-user.target

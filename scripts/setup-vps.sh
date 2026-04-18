@@ -7,7 +7,7 @@ set -euo pipefail
 # SSH:  ssh root@178.104.163.255
 # Usage: bash scripts/setup-vps.sh
 
-REPO_DIR="${REPO_DIR:-/root/tradingview-mcp}"
+REPO_DIR="${REPO_DIR:-/root/scalp-bot}"
 NODE_MAJOR="${NODE_MAJOR:-20}"
 
 echo "=== Scalp Bot VPS Setup ==="
@@ -68,8 +68,8 @@ sudo timedatectl set-timezone America/New_York
 echo ">>> Setting up cron jobs for session scheduling..."
 (crontab -l 2>/dev/null; cat <<CRON
 # Scalp bot session scheduling (ET timezone)
-25 9 * * 1-5 cd $REPO_DIR && pm2 start ecosystem.config.cjs >> /var/log/scalp-bot-cron.log 2>&1
-5 11 * * 1-5 cd $REPO_DIR && pm2 stop alpaca-bot >> /var/log/scalp-bot-cron.log 2>&1
+25 9 * * 1-5 cd $REPO_DIR && pm2 start ecosystem.config.cjs --only touch-turn-bot >> /var/log/scalp-bot-cron.log 2>&1
+30 11 * * 1-5 cd $REPO_DIR && pm2 stop touch-turn-bot >> /var/log/scalp-bot-cron.log 2>&1
 CRON
 ) | crontab -
 
@@ -85,7 +85,7 @@ echo "  5. Verify PM2: pm2 list"
 echo ""
 echo "Useful commands:"
 echo "  pm2 list              — Show managed processes"
-echo "  pm2 logs alpaca-bot   — View bot logs"
-echo "  pm2 describe alpaca-bot — Detailed bot status"
+echo "  pm2 logs touch-turn-bot   — View bot logs"
+echo "  pm2 describe touch-turn-bot — Detailed bot status"
 echo "  sudo systemctl status scalp-bot-ctl — Controller status"
 echo "  sudo journalctl -u scalp-bot-ctl -f — Controller logs"
