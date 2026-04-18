@@ -40,16 +40,11 @@ The full scripts block should be:
 
 ```json
 "scripts": {
-  "start": "node src/server.js",
-  "tv": "node src/cli/index.js",
-  "test": "node --test tests/e2e.test.js tests/pine_analyze.test.js",
-  "test:e2e": "node --test tests/e2e.test.js",
-  "test:unit": "node --test tests/pine_analyze.test.js tests/cli.test.js",
-  "test:cli": "node --test tests/cli.test.js",
+  "start": "node scripts/touch-turn-bot.js",
+  "test": "node --test tests/telegram-ctl.test.js",
   "test:ctl": "node --test tests/telegram-ctl.test.js",
-  "test:all": "node --test tests/e2e.test.js tests/pine_analyze.test.js tests/cli.test.js",
-  "test:verbose": "node --test --test-reporter=spec tests/e2e.test.js tests/pine_analyze.test.js",
-  "test:count": "node --test --test-reporter=spec tests/e2e.test.js 2>&1 | tail -5"
+  "backtest": "node scripts/backtest.js",
+  "swing-backtest": "node scripts/swing-backtest.js"
 }
 ```
 
