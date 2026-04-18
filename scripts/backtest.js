@@ -311,6 +311,81 @@ function processBarStrategyB(bar, state, hhmm, ind) {
   return { action: 'none' };
 }
 
+// ─── Strategy C: Touch and Turn Scalper ───
+
+function createTouchTurnState() {
+  return {
+    openRangeHigh: null,
+    openRangeLow: null,
+    openRangeOpen: null,
+    openRangeClose: null,
+    openingBars: 0,
+    rangeConfirmed: false,
+    tradedToday: false,
+  };
+}
+
+function processBarTouchTurn(bar, state, hhmm, ind) {
+  const { dailyATRMap, config } = ind;
+
+  // Build 15-min opening range from first 3 five-minute bars (9:30, 9:35, 9:40)
+  if (hhmm >= 930 && hhmm < 945) {
+    if (state.openRangeHigh === null) {
+      state.openRangeHigh = bar.high;
+      state.openRangeLow = bar.low;
+      state.openRangeOpen = bar.open;
+    } else {
+      state.openRangeHigh = Math.max(state.openRangeHigh, bar.high);
+      state.openRangeLow = Math.min(state.openRangeLow, bar.low);
+    }
+    state.openRangeClose = bar.close;
+    state.openingBars++;
+    if (state.openingBars >= 3) state.rangeConfirmed = true;
+    return { action: 'none' };
+  }
+
+  // Only trade within first 90 minutes (entries after 9:45, before 11:00)
+  if (hhmm < 945 || hhmm >= 1100) return { action: 'none' };
+
+  if (!state.rangeConfirmed || state.tradedToday) return { action: 'none' };
+
+  // ATR filter: opening range must be >= 25% of daily ATR
+  const range = state.openRangeHigh - state.openRangeLow;
+  const dateStr = getDateStr(bar.ts);
+  const dailyATR = dailyATRMap.get(dateStr);
+  if (config.useAtrFilter && dailyATR && dailyATR > 0 && range < dailyATR * config.atrPctThreshold) {
+    return { action: 'none' };
+  }
+
+  // Direction: red candle (close < open) → LONG at low, green candle → SHORT at high
+  const isRed = state.openRangeClose < state.openRangeOpen;
+  const isGreen = state.openRangeClose > state.openRangeOpen;
+
+  if (isRed) {
+    // LONG: limit order at low of range
+    const entry = state.openRangeLow;
+    if (bar.low <= entry) {
+      const targetDist = 0.618 * range;
+      const target = entry + targetDist;
+      const stop = entry - targetDist / 2;
+      state.tradedToday = true;
+      return { action: 'enter', side: 'long', stop, target, stopType: 'fixed' };
+    }
+  } else if (isGreen) {
+    // SHORT: limit order at high of range
+    const entry = state.openRangeHigh;
+    if (bar.high >= entry) {
+      const targetDist = 0.618 * range;
+      const target = entry - targetDist;
+      const stop = entry + targetDist / 2;
+      state.tradedToday = true;
+      return { action: 'enter', side: 'short', stop, target, stopType: 'fixed' };
+    }
+  }
+
+  return { action: 'none' };
+}
+
 // ─── Simulation engine ───
 
 function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap, scannerDays = null) {
@@ -417,31 +492,32 @@ function computeStats(trades, initialCapital, equityCurve, maxDrawdown) {
 
 // ─── Reporting ───
 
-function printReport(a, b, symbol, startDate, endDate) {
+function printReport(a, b, c, symbol, startDate, endDate) {
   const gbp = v => (v >= 0 ? '+' : '') + '£' + v.toFixed(2);
   const pct = v => v.toFixed(1) + '%';
   const num = v => v.toFixed(2);
 
-  console.log('='.repeat(60));
+  console.log('='.repeat(78));
   console.log(`  BACKTEST: ${symbol}  (${startDate} to ${endDate})`);
-  console.log('='.repeat(60));
+  console.log('='.repeat(78));
   console.log('');
-  console.log(`${'Metric'.padEnd(22)}${'Aziz ORB+VWAP'.padStart(18)}${'VWAP Reversion'.padStart(18)}`);
-  console.log('-'.repeat(58));
-  console.log(`${'Total Trades'.padEnd(22)}${String(a.totalTrades).padStart(18)}${String(b.totalTrades).padStart(18)}`);
-  console.log(`${'Wins'.padEnd(22)}${String(a.wins).padStart(18)}${String(b.wins).padStart(18)}`);
-  console.log(`${'Losses'.padEnd(22)}${String(a.losses).padStart(18)}${String(b.losses).padStart(18)}`);
-  console.log(`${'Win Rate'.padEnd(22)}${pct(a.winRate).padStart(18)}${pct(b.winRate).padStart(18)}`);
-  console.log(`${'Net P&L'.padEnd(22)}${gbp(a.netPnL).padStart(18)}${gbp(b.netPnL).padStart(18)}`);
-  console.log(`${'Final Equity'.padEnd(22)}${gbp(a.finalEquity).padStart(18)}${gbp(b.finalEquity).padStart(18)}`);
-  console.log(`${'Avg Win'.padEnd(22)}${gbp(a.avgWin).padStart(18)}${gbp(b.avgWin).padStart(18)}`);
-  console.log(`${'Avg Loss'.padEnd(22)}${gbp(a.avgLoss).padStart(18)}${gbp(b.avgLoss).padStart(18)}`);
-  console.log(`${'Max Drawdown'.padEnd(22)}${pct(a.maxDrawdown).padStart(18)}${pct(b.maxDrawdown).padStart(18)}`);
-  console.log(`${'Profit Factor'.padEnd(22)}${num(a.profitFactor).padStart(18)}${num(b.profitFactor).padStart(18)}`);
-  console.log('-'.repeat(58));
+  console.log(`${'Metric'.padEnd(22)}${'Aziz ORB+VWAP'.padStart(18)}${'VWAP Reversion'.padStart(18)}${'Touch & Turn'.padStart(18)}`);
+  console.log('-'.repeat(76));
+  console.log(`${'Total Trades'.padEnd(22)}${String(a.totalTrades).padStart(18)}${String(b.totalTrades).padStart(18)}${String(c.totalTrades).padStart(18)}`);
+  console.log(`${'Wins'.padEnd(22)}${String(a.wins).padStart(18)}${String(b.wins).padStart(18)}${String(c.wins).padStart(18)}`);
+  console.log(`${'Losses'.padEnd(22)}${String(a.losses).padStart(18)}${String(b.losses).padStart(18)}${String(c.losses).padStart(18)}`);
+  console.log(`${'Win Rate'.padEnd(22)}${pct(a.winRate).padStart(18)}${pct(b.winRate).padStart(18)}${pct(c.winRate).padStart(18)}`);
+  console.log(`${'Net P&L'.padEnd(22)}${gbp(a.netPnL).padStart(18)}${gbp(b.netPnL).padStart(18)}${gbp(c.netPnL).padStart(18)}`);
+  console.log(`${'Final Equity'.padEnd(22)}${gbp(a.finalEquity).padStart(18)}${gbp(b.finalEquity).padStart(18)}${gbp(c.finalEquity).padStart(18)}`);
+  console.log(`${'Avg Win'.padEnd(22)}${gbp(a.avgWin).padStart(18)}${gbp(b.avgWin).padStart(18)}${gbp(c.avgWin).padStart(18)}`);
+  console.log(`${'Avg Loss'.padEnd(22)}${gbp(a.avgLoss).padStart(18)}${gbp(b.avgLoss).padStart(18)}${gbp(c.avgLoss).padStart(18)}`);
+  console.log(`${'Max Drawdown'.padEnd(22)}${pct(a.maxDrawdown).padStart(18)}${pct(b.maxDrawdown).padStart(18)}${pct(c.maxDrawdown).padStart(18)}`);
+  console.log(`${'Profit Factor'.padEnd(22)}${num(a.profitFactor).padStart(18)}${num(b.profitFactor).padStart(18)}${num(c.profitFactor).padStart(18)}`);
+  console.log('-'.repeat(76));
 
   printTradeLog('AZIZ ORB+VWAP', a.trades, a.initialCapital);
   printTradeLog('VWAP REVERSION', b.trades, b.initialCapital);
+  printTradeLog('TOUCH & TURN', c.trades, c.initialCapital);
 
   console.log('');
   console.log(`Capital: £${a.initialCapital} | Risk: 10% equity/trade (min £20) | No slippage/commission`);
@@ -548,7 +624,13 @@ async function runScannerMode(startDate, endDate) {
     targetR: 2.0,
   };
 
+  const configC = {
+    sessionEnd: 1130, riskPct: 25, minPositionGBP: 50, initialCapital: 200,
+    useAtrFilter: true, atrPctThreshold: 0.25,
+  };
+
   const resultsA = {};
+  const resultsC = {};
 
   for (const symbol of Object.keys(allBars5m)) {
     const selectedDays = new Set();
@@ -558,47 +640,49 @@ async function runScannerMode(startDate, endDate) {
     if (selectedDays.size === 0) continue;
 
     resultsA[symbol] = runBacktest(allBars5m[symbol], processBarStrategyA, createStrategyAState, configA, allDailyATRMaps[symbol], selectedDays);
+    resultsC[symbol] = runBacktest(allBars5m[symbol], processBarTouchTurn, createTouchTurnState, configC, allDailyATRMaps[symbol], selectedDays);
   }
 
   const combinedA = combineSymbolResults(resultsA, configA.initialCapital);
-  printScannerReport(combinedA, startDate, endDate, configA.targetR);
+  const combinedC = combineSymbolResults(resultsC, configC.initialCapital);
+  printScannerReport(combinedA, combinedC, startDate, endDate);
 }
 
-function printScannerReport(a, startDate, endDate, targetR) {
+function printScannerReport(a, c, startDate, endDate) {
   const gbp = v => (v >= 0 ? '+' : '') + '£' + v.toFixed(2);
   const pct = v => v.toFixed(1) + '%';
   const num = v => v.toFixed(2);
 
-  console.log('\n' + '='.repeat(60));
-  console.log(`  AZIZ ORB+VWAP SCANNER (${startDate} to ${endDate})`);
-  console.log(`  Target: ${targetR}R | Stop: VWAP close | Filters: RVOL>1.5, ATR, gap<3%`);
-  console.log('='.repeat(60));
+  console.log('\n' + '='.repeat(76));
+  console.log(`  SCANNER (${startDate} to ${endDate})`);
+  console.log('='.repeat(76));
   console.log('');
-  console.log(`${'Total Trades'.padEnd(22)}${String(a.totalTrades).padStart(10)}`);
-  console.log(`${'Wins'.padEnd(22)}${String(a.wins).padStart(10)}`);
-  console.log(`${'Losses'.padEnd(22)}${String(a.losses).padStart(10)}`);
-  console.log(`${'Win Rate'.padEnd(22)}${pct(a.winRate).padStart(10)}`);
-  console.log(`${'Net P&L'.padEnd(22)}${gbp(a.netPnL).padStart(10)}`);
-  console.log(`${'Final Equity'.padEnd(22)}${gbp(a.finalEquity).padStart(10)}`);
-  console.log(`${'Avg Win'.padEnd(22)}${gbp(a.avgWin).padStart(10)}`);
-  console.log(`${'Avg Loss'.padEnd(22)}${gbp(a.avgLoss).padStart(10)}`);
-  console.log(`${'Max Drawdown'.padEnd(22)}${pct(a.maxDrawdown).padStart(10)}`);
-  console.log(`${'Profit Factor'.padEnd(22)}${num(a.profitFactor).padStart(10)}`);
-  console.log('-'.repeat(32));
+  console.log(`${'Metric'.padEnd(22)}${'Aziz ORB+VWAP'.padStart(18)}${'Touch & Turn'.padStart(18)}`);
+  console.log('-'.repeat(58));
+  console.log(`${'Total Trades'.padEnd(22)}${String(a.totalTrades).padStart(18)}${String(c.totalTrades).padStart(18)}`);
+  console.log(`${'Wins'.padEnd(22)}${String(a.wins).padStart(18)}${String(c.wins).padStart(18)}`);
+  console.log(`${'Losses'.padEnd(22)}${String(a.losses).padStart(18)}${String(c.losses).padStart(18)}`);
+  console.log(`${'Win Rate'.padEnd(22)}${pct(a.winRate).padStart(18)}${pct(c.winRate).padStart(18)}`);
+  console.log(`${'Net P&L'.padEnd(22)}${gbp(a.netPnL).padStart(18)}${gbp(c.netPnL).padStart(18)}`);
+  console.log(`${'Final Equity'.padEnd(22)}${gbp(a.finalEquity).padStart(18)}${gbp(c.finalEquity).padStart(18)}`);
+  console.log(`${'Max Drawdown'.padEnd(22)}${pct(a.maxDrawdown).padStart(18)}${pct(c.maxDrawdown).padStart(18)}`);
+  console.log(`${'Profit Factor'.padEnd(22)}${num(a.profitFactor).padStart(18)}${num(c.profitFactor).padStart(18)}`);
+  console.log('-'.repeat(58));
 
-  const symbols = Object.keys(a.perSymbol);
-  if (symbols.length > 0) {
-    console.log(`\n  Per-Symbol Breakdown`);
+  for (const [name, data] of [['Aziz ORB+VWAP', a], ['Touch & Turn', c]]) {
+    const symbols = Object.keys(data.perSymbol || {}).filter(s => data.perSymbol[s].totalTrades > 0);
+    if (symbols.length === 0) continue;
+
+    console.log(`\n  ${name} — Per-Symbol Breakdown`);
     console.log(`  ${'Symbol'.padEnd(8)}${'Trades'.padStart(8)}${'WR%'.padStart(8)}${'P&L'.padStart(10)}${'PF'.padStart(8)}`);
     console.log(`  ${'------'.padEnd(8)}${'------'.padStart(8)}${'---'.padStart(8)}${'---'.padStart(10)}${'--'.padStart(8)}`);
     for (const sym of symbols.sort()) {
-      const r = a.perSymbol[sym];
-      if (r.totalTrades === 0) continue;
+      const r = data.perSymbol[sym];
       console.log(`  ${sym.padEnd(8)}${String(r.totalTrades).padStart(8)}${pct(r.winRate).padStart(8)}${gbp(r.netPnL).padStart(10)}${num(r.profitFactor).padStart(8)}`);
     }
   }
 
-  console.log(`\nCapital: £${a.initialCapital} | Risk: 10% equity/trade (min £20) | Scanner: top ${SCANNER_TOP_N} RVOL/day | No slippage/commission`);
+  console.log(`\nCapital: £${a.initialCapital} | Risk: 25% equity/trade (min £50) | Scanner: top ${SCANNER_TOP_N} RVOL/day | No slippage/commission`);
 }
 
 // ─── Main ───
@@ -644,13 +728,21 @@ async function main() {
     cooldownBars: 10,
   };
 
+  const configC = {
+    sessionEnd: 1130, riskPct: 10, minPositionGBP: 20, initialCapital: 200,
+    useAtrFilter: true, atrPctThreshold: 0.25,
+  };
+
   console.log('Running Aziz ORB + VWAP backtest...');
   const resultA = runBacktest(bars, processBarStrategyA, createStrategyAState, configA, dailyATRMap);
 
   console.log('Running VWAP Reversion backtest...');
   const resultB = runBacktest(bars, processBarStrategyB, createStrategyBState, configB, dailyATRMap);
 
-  printReport(resultA, resultB, symbol, startDate, endDate);
+  console.log('Running Touch and Turn backtest...');
+  const resultC = runBacktest(bars, processBarTouchTurn, createTouchTurnState, configC, dailyATRMap);
+
+  printReport(resultA, resultB, resultC, symbol, startDate, endDate);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
