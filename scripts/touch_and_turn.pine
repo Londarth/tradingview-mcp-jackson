@@ -1,0 +1,115 @@
+//@version=6
+strategy("Touch & Turn Scalper", overlay=true, max_bars_back=500, default_qty_type=strategy.percent_of_equity, default_qty_value=10, initial_capital=200, currency=currency.GBP)
+
+// ─── Inputs ───
+showLabels       = input.bool(true, "Show Entry Labels", group="Display")
+showFib          = input.bool(true, "Show Fibonacci Levels", group="Display")
+atrPctThreshold  = input.float(25.0, "Liquidity Candle ATR %", minval=10, maxval=50, group="Filters", tooltip="Opening range must be >= this % of daily ATR to qualify as a liquidity candle")
+targetFib        = input.float(0.618, "Target Fib Level", minval=0.382, maxval=0.786, step=0.001, group="Exits", tooltip="Target distance from entry as fraction of opening range. 0.618 = 61.8% Fib retracement")
+rrRatio          = input.float(2.0, "Risk:Reward Ratio", minval=1.0, maxval=4.0, step=0.5, group="Exits", tooltip="Stop is target distance / rrRatio")
+tradingEnd       = input.int(1100, "Session End (HHMM)", group="Session")
+
+// ─── Session helpers ───
+isSessionStart(t) =>
+    hhmm = hour(t) * 100 + minute(t)
+    hhmm == 930
+
+inSession(t) =>
+    hhmm = hour(t) * 100 + minute(t)
+    hhmm >= 930 and hhmm < tradingEnd
+
+// ─── 15-minute opening range (first 3 five-minute bars: 9:30, 9:35, 9:40) ───
+var bool   openingComplete = false
+var float  openRangeHigh   = na
+var float  openRangeLow    = na
+var float  openRangeOpen   = na
+var float  openRangeClose  = na
+var int    openingBars     = 0
+var bool   candleIsRed     = false
+var bool   candleIsGreen   = false
+
+if isSessionStart(time)
+    openRangeHigh   := high
+    openRangeLow    := low
+    openRangeOpen   := open
+    openRangeClose  := close
+    openingBars     := 1
+    openingComplete := false
+    candleIsRed     := false
+    candleIsGreen   := false
+else if not openingComplete and openingBars > 0 and openingBars < 3
+    openRangeHigh := math.max(openRangeHigh, high)
+    openRangeLow  := math.min(openRangeLow, low)
+    openRangeClose := close
+    openingBars   := openingBars + 1
+    if openingBars == 3
+        openingComplete := true
+        candleIsRed   := openRangeClose < openRangeOpen
+        candleIsGreen := openRangeClose > openRangeOpen
+
+// ─── ATR filter: opening range must be >= 25% of daily ATR ───
+dailyATR  = request.security(syminfo.tickerid, "D", ta.atr(14))
+rangeSize = openRangeHigh - openRangeLow
+atrOk     = not na(dailyATR) and dailyATR > 0 and rangeSize >= dailyATR * (atrPctThreshold / 100)
+
+// ─── State tracking ───
+var bool tradedToday = false
+
+if isSessionStart(time)
+    tradedToday := false
+
+// ─── Calculate entry/exit levels ───
+var float  entryLevel = na
+var float  targetLevel = na
+var float  stopLevel   = na
+var string tradeSide   = ""
+
+if openingComplete and atrOk and not tradedToday and inSession(time)
+    range = openRangeHigh - openRangeLow
+    if candleIsRed
+        // LONG: entry at low of range
+        entryLevel  := openRangeLow
+        targetLevel := openRangeLow + targetFib * range
+        stopLevel   := openRangeLow - (targetFib * range) / rrRatio
+        tradeSide   := "LONG"
+    else if candleIsGreen
+        // SHORT: entry at high of range
+        entryLevel  := openRangeHigh
+        targetLevel := openRangeHigh - targetFib * range
+        stopLevel   := openRangeHigh + (targetFib * range) / rrRatio
+        tradeSide   := "SHORT"
+
+// ─── Entry: price touches entry level ───
+canTrade = openingComplete and atrOk and not tradedToday and inSession(time) and strategy.position_size == 0
+
+if canTrade and candleIsRed and low <= openRangeLow
+    strategy.entry("Long", strategy.long, limit=openRangeLow)
+    strategy.exit("TP/SL", "Long", stop=stopLevel, limit=targetLevel)
+    tradedToday := true
+    if showLabels
+        label.new(bar_index, low, "L", color=color.green, textcolor=color.white, style=label.style_label_up, size=size.small)
+
+if canTrade and candleIsGreen and high >= openRangeHigh
+    strategy.entry("Short", strategy.short, limit=openRangeHigh)
+    strategy.exit("TP/SL", "Short", stop=stopLevel, limit=targetLevel)
+    tradedToday := true
+    if showLabels
+        label.new(bar_index, high, "S", color=color.red, textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// ─── Auto-close at session end ───
+if not inSession(time) and strategy.position_size != 0
+    strategy.close_all(comment="Session End")
+
+// ─── Draw opening range box ───
+if showFib and openingComplete and openingBars == 3
+    box.new(bar_index - 2, openRangeHigh, bar_index + 20, openRangeLow, bgcolor=color.new(color.purple, 85), border_color=color.purple)
+    line.new(bar_index - 2, openRangeHigh, bar_index + 20, openRangeHigh, color=color.blue, style=line.style_dashed)
+    line.new(bar_index - 2, openRangeLow,  bar_index + 20, openRangeLow,  color=color.orange, style=line.style_dashed)
+    // Fib levels
+    range = openRangeHigh - openRangeLow
+    line.new(bar_index - 2, openRangeLow + targetFib * range, bar_index + 20, openRangeLow + targetFib * range, color=color.new(color.green, 30), style=line.style_dotted, width=2)
+    line.new(bar_index - 2, openRangeHigh - targetFib * range, bar_index + 20, openRangeHigh - targetFib * range, color=color.new(color.green, 30), style=line.style_dotted, width=2)
+
+// ─── Plots ───
+plot(openingComplete ? openRangeHigh : na, "OR High", color=color.new(color.blue, 40), style=plot.style_stepline, linewidth=1, trackprice=false)
+plot(openingComplete ? openRangeLow : na, "OR Low", color=color.new(color.orange, 40), style=plot.style_stepline, linewidth=1, trackprice=false)
