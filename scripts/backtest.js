@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 
+const SCANNER_UNIVERSE = [
+  'AAPL', 'AMD', 'AMZN', 'BABA', 'COIN', 'DAL', 'DIS', 'F', 'GM', 'GOOGL',
+  'INTC', 'JPM', 'MARA', 'META', 'MSFT', 'MU', 'NFLX', 'NVDA', 'PLTR', 'PYPL',
+  'RIVN', 'SBUX', 'SNAP', 'SOFI', 'SPOT', 'SQ', 'TSLA', 'UBER', 'WBD', 'Z',
+];
+const SCANNER_TOP_N = 5;
+
 // ─── Data fetching ───
 
 async function fetchBarsPaginated(symbol, timeframe, startDate, endDate) {
@@ -133,6 +140,46 @@ function computeDailyATRMap(dailyBars, period = 14) {
   return map;
 }
 
+// ─── RVOL Scanner ───
+
+function computeScannerSelections(allBars5m, allDailyATRMaps) {
+  const dayRankings = new Map();
+
+  for (const [symbol, bars] of Object.entries(allBars5m)) {
+    const smaVolume = createSMA(12);
+    const dailyATRMap = allDailyATRMaps[symbol];
+    if (!dailyATRMap) continue;
+
+    for (const bar of bars) {
+      smaVolume.push(bar.volume);
+      const hhmm = getHHMM_ET(bar.ts);
+      if (hhmm !== 930 || !smaVolume.ready()) continue;
+
+      const volMA = smaVolume.value();
+      if (!volMA || volMA <= 0) continue;
+
+      const rvol = bar.volume / volMA;
+      const dateStr = getDateStr(bar.ts);
+      const dailyATR = dailyATRMap.get(dateStr) || 0;
+      const price = bar.close;
+
+      // Filter: price < $200 and ATR > $1
+      if (price >= 200 || dailyATR <= 1) continue;
+
+      if (!dayRankings.has(dateStr)) dayRankings.set(dateStr, []);
+      dayRankings.get(dateStr).push({ symbol, rvol, price, atr: dailyATR });
+    }
+  }
+
+  const selections = new Map();
+  for (const [dateStr, rankings] of dayRankings) {
+    rankings.sort((a, b) => b.rvol - a.rvol);
+    selections.set(dateStr, rankings.slice(0, SCANNER_TOP_N));
+  }
+
+  return selections;
+}
+
 // ─── Exit check ───
 
 function checkExits(bar, position, sessionEnd, vwap) {
@@ -251,7 +298,7 @@ function processBarStrategyB(bar, state, hhmm, ind) {
 
 // ─── Simulation engine ───
 
-function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap) {
+function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap, scannerDays = null) {
   const initialCapital = config.initialCapital || 200;
   let equity = initialCapital;
   let position = null;
@@ -302,8 +349,8 @@ function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap) {
       }
     }
 
-    // Check entries
-    if (!position) {
+    // Check entries (skip if scanner mode and day not selected)
+    if (!position && (!scannerDays || scannerDays.has(barDate))) {
       const signal = processBarFn(bar, state, hhmm, {
         sessionVWAP, smaVolume, atr5m, rsi14, dailyATRMap, config,
       });
@@ -405,10 +452,178 @@ function printTradeLog(name, trades, initialCapital) {
   }
 }
 
+// ─── Scanner mode ───
+
+function combineSymbolResults(allResults, initialCapital) {
+  const allTrades = Object.values(allResults)
+    .flatMap(r => r.trades)
+    .sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.entryPrice - b.entryPrice);
+
+  const wins = allTrades.filter(t => t.pnl > 0);
+  const losses = allTrades.filter(t => t.pnl <= 0);
+  const totalWins = wins.reduce((s, t) => s + t.pnl, 0);
+  const totalLosses = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+  const netPnL = allTrades.reduce((s, t) => s + t.pnl, 0);
+
+  let equity = initialCapital;
+  let peakEquity = equity;
+  let maxDrawdown = 0;
+  const equityCurve = [equity];
+  for (const t of allTrades) {
+    equity += t.pnl;
+    peakEquity = Math.max(peakEquity, equity);
+    maxDrawdown = Math.max(maxDrawdown, (peakEquity - equity) / peakEquity);
+    equityCurve.push(equity);
+  }
+
+  return {
+    totalTrades: allTrades.length, wins: wins.length, losses: losses.length,
+    winRate: allTrades.length > 0 ? (wins.length / allTrades.length * 100) : 0,
+    netPnL, avgWin: wins.length > 0 ? totalWins / wins.length : 0,
+    avgLoss: losses.length > 0 ? totalLosses / losses.length : 0,
+    maxDrawdown: maxDrawdown * 100,
+    profitFactor: totalLosses > 0 ? totalWins / totalLosses : totalWins > 0 ? Infinity : 0,
+    equityCurve, finalEquity: equity, initialCapital,
+    perSymbol: allResults,
+  };
+}
+
+async function runScannerMode(startDate, endDate) {
+  console.log(`Scanner mode: fetching data for ${SCANNER_UNIVERSE.length} symbols...`);
+  const allBars5m = {};
+  const allDailyATRMaps = {};
+  let fetched = 0;
+
+  for (const symbol of SCANNER_UNIVERSE) {
+    try {
+      const raw5 = await fetchBarsPaginated(symbol, '5Min', startDate, endDate);
+      if (raw5.length === 0) { console.log(`  ${symbol}: no data`); continue; }
+      allBars5m[symbol] = raw5.map(norm5);
+
+      const dailyStart = new Date(Date.parse(startDate) - 45 * 86400000).toISOString().split('T')[0];
+      const rawD = await fetchBarsPaginated(symbol, '1Day', dailyStart, endDate);
+      const dailyBars = rawD.map(normD);
+      allDailyATRMaps[symbol] = computeDailyATRMap(dailyBars, 14);
+      fetched++;
+      console.log(`  ${symbol}: ${allBars5m[symbol].length} bars`);
+    } catch (e) {
+      console.log(`  ${symbol}: ${e.message}`);
+    }
+  }
+
+  console.log(`\nFetched ${fetched}/${SCANNER_UNIVERSE.length} symbols`);
+
+  const selections = computeScannerSelections(allBars5m, allDailyATRMaps);
+  console.log(`Scanner: ${selections.size} trading days with selections\n`);
+
+  // Print scanner selections
+  console.log('='.repeat(60));
+  console.log('  RVOL SCANNER — Top 5 per Day');
+  console.log('='.repeat(60));
+  for (const [dateStr, stocks] of selections) {
+    const names = stocks.map(s => `${s.symbol}(${s.rvol.toFixed(1)}x)`).join(', ');
+    console.log(`  ${dateStr}: ${names}`);
+  }
+
+  // Run backtests for scanner-selected symbols
+  const configA = {
+    sessionEnd: 1130, riskPct: 10, minPositionGBP: 20, initialCapital: 200,
+    useAtrFilter: true,
+    useRvolFilter: true, rvolThreshold: 1.5, volumeMALength: 12,
+    targetR: 2.0,
+  };
+  const configB = {
+    sessionEnd: 1130, riskPct: 10, minPositionGBP: 20, initialCapital: 200,
+    atrDistMult: 1.0, stopAtrMult: 0.5,
+    useRsiFilter: true, rsiMaxLong: 70, rsiMinShort: 30,
+    useVolFilter: true, volumeMALength: 12,
+    cooldownBars: 10,
+  };
+
+  const resultsA = {};
+  const resultsB = {};
+
+  for (const symbol of Object.keys(allBars5m)) {
+    const selectedDays = new Set();
+    for (const [dateStr, stocks] of selections) {
+      if (stocks.some(s => s.symbol === symbol)) selectedDays.add(dateStr);
+    }
+    if (selectedDays.size === 0) continue;
+
+    resultsA[symbol] = runBacktest(allBars5m[symbol], processBarStrategyA, createStrategyAState, configA, allDailyATRMaps[symbol], selectedDays);
+    resultsB[symbol] = runBacktest(allBars5m[symbol], processBarStrategyB, createStrategyBState, configB, allDailyATRMaps[symbol], selectedDays);
+  }
+
+  const combinedA = combineSymbolResults(resultsA, configA.initialCapital);
+  const combinedB = combineSymbolResults(resultsB, configB.initialCapital);
+
+  printScannerReport(combinedA, combinedB, startDate, endDate);
+}
+
+function printScannerReport(a, b, startDate, endDate) {
+  const gbp = v => (v >= 0 ? '+' : '') + '£' + v.toFixed(2);
+  const pct = v => v.toFixed(1) + '%';
+  const num = v => v.toFixed(2);
+
+  console.log('\n' + '='.repeat(60));
+  console.log(`  SCANNER BACKTEST: RVOL-Selected Stocks (${startDate} to ${endDate})`);
+  console.log('='.repeat(60));
+  console.log('');
+  console.log(`${'Metric'.padEnd(22)}${'Aziz ORB+VWAP'.padStart(18)}${'VWAP Reversion'.padStart(18)}`);
+  console.log('-'.repeat(58));
+  console.log(`${'Total Trades'.padEnd(22)}${String(a.totalTrades).padStart(18)}${String(b.totalTrades).padStart(18)}`);
+  console.log(`${'Wins'.padEnd(22)}${String(a.wins).padStart(18)}${String(b.wins).padStart(18)}`);
+  console.log(`${'Losses'.padEnd(22)}${String(a.losses).padStart(18)}${String(b.losses).padStart(18)}`);
+  console.log(`${'Win Rate'.padEnd(22)}${pct(a.winRate).padStart(18)}${pct(b.winRate).padStart(18)}`);
+  console.log(`${'Net P&L'.padEnd(22)}${gbp(a.netPnL).padStart(18)}${gbp(b.netPnL).padStart(18)}`);
+  console.log(`${'Final Equity'.padEnd(22)}${gbp(a.finalEquity).padStart(18)}${gbp(b.finalEquity).padStart(18)}`);
+  console.log(`${'Avg Win'.padEnd(22)}${gbp(a.avgWin).padStart(18)}${gbp(b.avgWin).padStart(18)}`);
+  console.log(`${'Avg Loss'.padEnd(22)}${gbp(a.avgLoss).padStart(18)}${gbp(b.avgLoss).padStart(18)}`);
+  console.log(`${'Max Drawdown'.padEnd(22)}${pct(a.maxDrawdown).padStart(18)}${pct(b.maxDrawdown).padStart(18)}`);
+  console.log(`${'Profit Factor'.padEnd(22)}${num(a.profitFactor).padStart(18)}${num(b.profitFactor).padStart(18)}`);
+  console.log('-'.repeat(58));
+
+  // Per-symbol breakdown
+  const symbolsA = Object.keys(a.perSymbol);
+  if (symbolsA.length > 0) {
+    console.log(`\n  Aziz ORB+VWAP — Per-Symbol Breakdown`);
+    console.log(`  ${'Symbol'.padEnd(8)}${'Trades'.padStart(8)}${'WR%'.padStart(8)}${'P&L'.padStart(10)}${'PF'.padStart(8)}`);
+    console.log(`  ${'------'.padEnd(8)}${'------'.padStart(8)}${'---'.padStart(8)}${'---'.padStart(10)}${'--'.padStart(8)}`);
+    for (const sym of symbolsA.sort()) {
+      const r = a.perSymbol[sym];
+      if (r.totalTrades === 0) continue;
+      console.log(`  ${sym.padEnd(8)}${String(r.totalTrades).padStart(8)}${pct(r.winRate).padStart(8)}${gbp(r.netPnL).padStart(10)}${num(r.profitFactor).padStart(8)}`);
+    }
+  }
+
+  const symbolsB = Object.keys(b.perSymbol);
+  if (symbolsB.length > 0) {
+    console.log(`\n  VWAP Reversion — Per-Symbol Breakdown`);
+    console.log(`  ${'Symbol'.padEnd(8)}${'Trades'.padStart(8)}${'WR%'.padStart(8)}${'P&L'.padStart(10)}${'PF'.padStart(8)}`);
+    console.log(`  ${'------'.padEnd(8)}${'------'.padStart(8)}${'---'.padStart(8)}${'---'.padStart(10)}${'--'.padStart(8)}`);
+    for (const sym of symbolsB.sort()) {
+      const r = b.perSymbol[sym];
+      if (r.totalTrades === 0) continue;
+      console.log(`  ${sym.padEnd(8)}${String(r.totalTrades).padStart(8)}${pct(r.winRate).padStart(8)}${gbp(r.netPnL).padStart(10)}${num(r.profitFactor).padStart(8)}`);
+    }
+  }
+
+  console.log(`\nCapital: £${a.initialCapital} | Risk: 10% equity/trade (min £20) | Scanner: top ${SCANNER_TOP_N} RVOL stocks/day | No slippage/commission`);
+}
+
 // ─── Main ───
 
 async function main() {
-  const symbol = process.argv[2] || 'AMD';
+  const mode = process.argv[2];
+
+  if (mode === 'scan') {
+    const startDate = process.argv[3] || new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
+    const endDate = process.argv[4] || new Date().toISOString().split('T')[0];
+    await runScannerMode(startDate, endDate);
+    return;
+  }
+
+  const symbol = mode || 'AMD';
   const startDate = process.argv[3] || new Date(Date.now() - 180 * 86400000).toISOString().split('T')[0];
   const endDate = process.argv[4] || new Date().toISOString().split('T')[0];
   const dailyStart = new Date(Date.parse(startDate) - 45 * 86400000).toISOString().split('T')[0];
