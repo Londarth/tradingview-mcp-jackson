@@ -102,10 +102,8 @@ isInvHammer(o, h, l, c) =>
     candleRange = h - l
     candleRange > 0 ? (h - math.max(o, c)) / candleRange >= 0.6 : false
 
-bullCandle = close > open
-bearCandle = close < open
-wickConfirmLong  = bullCandle and (isHammer(open, high, low, close) or bullCandle)
-wickConfirmShort = bearCandle and (isInvHammer(open, high, low, close) or bearCandle)
+wickConfirmLong  = isHammer(open, high, low, close)
+wickConfirmShort = isInvHammer(open, high, low, close)
 
 // ─── Dynamic exits using ATR ───
 atr5m     = ta.atr(14)
