@@ -304,6 +304,8 @@ async function monitorOrder(orderId, sym, untilHHMM) {
 
 // ─── Monitor position until hard exit ───
 async function monitorPosition(sym, untilHHMM) {
+  let lastPnl = 0;
+
   while (getHHMM() < untilHHMM) {
     try {
       if (DRY_RUN) {
@@ -315,11 +317,11 @@ async function monitorPosition(sym, untilHHMM) {
       const pos = await alpaca.getPosition(sym).catch(() => null);
       if (!pos || parseFloat(pos.qty) === 0) {
         log(`${sym}: Position closed (by stop/target)`, 'trade');
-        return { closed: true, byBracket: true };
+        return { closed: true, byBracket: true, pnl: lastPnl };
       }
 
-      const unrealizedPnl = parseFloat(pos.unrealized_pl);
-      log(`${sym}: Position open — unrealized P&L: $${unrealizedPnl.toFixed(2)}`);
+      lastPnl = parseFloat(pos.unrealized_pl);
+      log(`${sym}: Position open — unrealized P&L: $${lastPnl.toFixed(2)}`);
       await writeSnapshot();
       await sleep(CONFIG.pollIntervalMs);
     } catch (err) {
@@ -333,12 +335,14 @@ async function monitorPosition(sym, untilHHMM) {
     try {
       const pos = await alpaca.getPosition(sym).catch(() => null);
       if (pos && parseFloat(pos.qty) > 0) {
+        // Capture P&L before closing
+        lastPnl = parseFloat(pos.unrealized_pl);
         await alpaca.createOrder({
           symbol: sym, qty: pos.qty,
           side: pos.side === 'long' ? 'sell' : 'buy',
           type: 'market', time_in_force: 'day',
         });
-        log(`${sym}: Force-closed position (session end)`, 'trade');
+        log(`${sym}: Force-closed position (session end) — P&L: $${lastPnl.toFixed(2)}`, 'trade');
       }
     } catch (err) {
       log(`${sym} CLOSE ERROR: ${err.message}`, 'error');
@@ -346,7 +350,7 @@ async function monitorPosition(sym, untilHHMM) {
     }
   }
 
-  return { closed: true, byBracket: false };
+  return { closed: true, byBracket: false, pnl: lastPnl };
 }
 
 // ─── Morning report ───
@@ -521,15 +525,14 @@ async function runBot() {
   // Order filled — monitor position until hard exit
   const posResult = await monitorPosition(sym, CONFIG.hardExit);
 
-  // Get final P&L
-  let pnl = 0;
-  if (!DRY_RUN) {
+  // Get final P&L from monitorPosition result
+  let pnl = posResult.pnl || 0;
+  if (!DRY_RUN && posResult.byBracket) {
+    // If closed by bracket (stop/target), try to get realized P&L from closed position
     try {
-      const pos = await alpaca.getPosition(sym).catch(() => null);
-      if (pos) {
-        pnl = parseFloat(pos.unrealized_pl);
-      }
-    } catch (e) { /* position may already be closed */ }
+      const closedPos = await alpaca.getPosition(sym).catch(() => null);
+      if (closedPos) pnl = parseFloat(closedPos.unrealized_pl);
+    } catch (e) { /* position already closed */ }
   }
 
   log(`${sym}: Session complete — P&L: $${pnl.toFixed(2)}`, 'trade');
