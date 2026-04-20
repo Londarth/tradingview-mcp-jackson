@@ -12,7 +12,6 @@ const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const TG_API = `https://api.telegram.org/bot${TG_TOKEN}`;
 const BOT_NAME = 'touch-turn';
-const CONFIG_PATH = join(__dirname, 'alpaca-config.json');
 const LOG_PATH = join(__dirname, 'touch-turn-log.json');
 const SNAPSHOT_PATH = join(__dirname, 'account-snapshot.json');
 
@@ -99,15 +98,6 @@ async function readTradeLog() {
     return log.slice(-10);
   } catch {
     return [];
-  }
-}
-
-async function readConfig() {
-  try {
-    const data = await readFile(CONFIG_PATH, 'utf8');
-    return JSON.parse(data);
-  } catch {
-    return {};
   }
 }
 
