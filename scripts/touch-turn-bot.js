@@ -549,9 +549,12 @@ runBot().catch(err => {
   process.exit(1);
 });
 
-process.on('SIGINT', async () => {
-  log('Shutting down...');
+async function shutdown(signal) {
+  log(`Shutting down (${signal})...`);
   await tgShutdown();
   saveLog();
   process.exit(0);
-});
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
