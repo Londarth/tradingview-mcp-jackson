@@ -67,23 +67,6 @@ export async function tgDryRunSignal(sym, side, price, stop, target, rr, qty) {
   );
 }
 
-export async function tgBreakout(sym, direction, level, atrPct, rvol) {
-  const arrow = direction === 'above' ? '⬆️' : '⬇️';
-  await sendTelegram(
-    `${arrow} <b>${sym} breakout ${direction}</b> ${level.toFixed(2)}\n` +
-    `ATR%: ${atrPct.toFixed(1)} | RVOL: ${rvol.toFixed(2)}`
-  );
-}
-
-export async function tgMorningBrief(symData) {
-  let msg = `☀️ <b>Morning Brief</b>\n${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}\n\n`;
-  for (const s of symData) {
-    msg += `<b>${s.symbol}</b>: ATR=$${s.atr?.toFixed(2) ?? 'N/A'} | Last=$${s.lastPrice?.toFixed(2) ?? 'N/A'}\n`;
-  }
-  msg += `\nSession: 9:30–11:00 ET | Max trades: 2/day/symbol`;
-  await sendTelegram(msg);
-}
-
 export async function tgEODSummary(results) {
   let msg = `📊 <b>End of Day Report</b>\n${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}\n\n`;
   let totalPnl = 0;
