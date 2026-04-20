@@ -89,10 +89,10 @@ export async function tgError(message) {
 
 export async function tgStartup(mode, symbols) {
   await sendTelegram(
-    `🚀 <b>One Candle Scalp Bot Started</b>\n` +
+    `🚀 <b>Touch &amp; Turn Bot Started</b>\n` +
     `Mode: ${mode}\n` +
     `Symbols: ${symbols.join(', ')}\n` +
-    `Session: 9:30–11:00 ET`
+    `Window: 9:45–11:00 ET`
   );
 }
 

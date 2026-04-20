@@ -128,7 +128,8 @@ async function readSnapshot() {
 async function handleStart() {
   try {
     await pm2('start ecosystem.config.cjs --only touch-turn-bot');
-    await sendTelegram('⚡️ <b>Touch &amp; Turn Bot started</b>\nMode: PAPER\nWindow: 9:45–11:00 ET');
+    const paper = process.env.ALPACA_PAPER !== 'false' ? 'PAPER' : 'LIVE';
+    await sendTelegram(`⚡️ <b>Touch &amp; Turn Bot started</b>\nMode: ${paper}\nWindow: 9:45–11:00 ET`);
   } catch (err) {
     await sendTelegram(`❌ Failed to start bot: ${err.message}`);
   }
