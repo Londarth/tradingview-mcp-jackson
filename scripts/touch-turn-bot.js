@@ -15,17 +15,19 @@ import { retry } from './lib/retry.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ─── Config ───
-const UNIVERSE = ['SOFI', 'INTC', 'Z', 'DAL', 'RIVN', 'SBUX', 'CCL', 'DIS', 'F', 'GM', 'PLTR', 'SNAP'];
+const UNIVERSE = (process.env.UNIVERSE || 'SOFI,INTC,Z,DAL,RIVN,SBUX,CCL,DIS,F,GM,PLTR,SNAP')
+  .split(',').map(s => s.trim()).filter(Boolean);
 const DRY_RUN = process.env.DRY_RUN === 'true';
 const CONFIG = {
-  atrPctThreshold: 0.25,
-  targetFib: 0.618,
-  rrRatio: 2.0,
+  atrPctThreshold: parseFloat(process.env.ATR_PCT_THRESHOLD) || 0.25,
+  targetFib: parseFloat(process.env.TARGET_FIB) || 0.618,
+  rrRatio: parseFloat(process.env.RR_RATIO) || 2.0,
   positionPct: parseInt(process.env.POSITION_PCT, 10) || 10,
-  sessionEnd: 1100,
-  hardExit: 1130,
-  pollIntervalMs: 30000,
-  minATR: 0.50,
+  sessionEnd: parseInt(process.env.SESSION_END, 10) || 1100,
+  hardExit: parseInt(process.env.HARD_EXIT, 10) || 1130,
+  pollIntervalMs: parseInt(process.env.POLL_INTERVAL_MS, 10) || 30000,
+  minATR: parseFloat(process.env.MIN_ATR) || 0.50,
+  minPositionUSD: parseInt(process.env.MIN_POSITION_USD, 10) || 100,
 };
 
 let activeOrderId = null;
@@ -513,7 +515,7 @@ async function runBot() {
 
   // Calculate position size
   const balance = parseFloat(account.portfolio_value);
-  const positionValue = balance * (CONFIG.positionPct / 100);
+  const positionValue = Math.max(balance * (CONFIG.positionPct / 100), CONFIG.minPositionUSD);
   const qty = Math.max(1, Math.floor(positionValue / entryPrice));
 
   log(`${sym}: Position = $${positionValue.toFixed(2)} (${CONFIG.positionPct}%) = ${qty} shares @ $${entryPrice.toFixed(2)}`);

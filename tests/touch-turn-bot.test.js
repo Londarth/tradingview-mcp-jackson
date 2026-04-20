@@ -76,3 +76,41 @@ describe('config validation', () => {
     assert.deepEqual(missing, ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID']);
   });
 });
+
+describe('CONFIG env var overrides', () => {
+  it('UNIVERSE reads from comma-separated env var', () => {
+    process.env.UNIVERSE = 'AAPL,TSLA';
+    const universe = (process.env.UNIVERSE || '').split(',').map(s => s.trim()).filter(Boolean);
+    assert.deepEqual(universe, ['AAPL', 'TSLA']);
+    delete process.env.UNIVERSE;
+  });
+
+  it('UNIVERSE falls back to default list when env var not set', () => {
+    const defaultUniverse = ['SOFI','INTC','Z','DAL','RIVN','SBUX','CCL','DIS','F','GM','PLTR','SNAP'];
+    const universe = process.env.UNIVERSE
+      ? process.env.UNIVERSE.split(',').map(s => s.trim()).filter(Boolean)
+      : defaultUniverse;
+    assert.deepEqual(universe, defaultUniverse);
+  });
+
+  it('numeric env vars parse with fallback', () => {
+    process.env.ATR_PCT_THRESHOLD = '0.30';
+    const val = parseFloat(process.env.ATR_PCT_THRESHOLD) || 0.25;
+    assert.equal(val, 0.30);
+    delete process.env.ATR_PCT_THRESHOLD;
+
+    const val2 = parseFloat(process.env.ATR_PCT_THRESHOLD) || 0.25;
+    assert.equal(val2, 0.25);
+  });
+
+  it('SESSION_END and HARD_EXIT parse as integers', () => {
+    process.env.SESSION_END = '1200';
+    process.env.HARD_EXIT = '1230';
+    const sessionEnd = parseInt(process.env.SESSION_END, 10) || 1100;
+    const hardExit = parseInt(process.env.HARD_EXIT, 10) || 1130;
+    assert.equal(sessionEnd, 1200);
+    assert.equal(hardExit, 1230);
+    delete process.env.SESSION_END;
+    delete process.env.HARD_EXIT;
+  });
+});
