@@ -488,9 +488,9 @@ async function runBot() {
   // Calculate position size
   const balance = parseFloat(account.portfolio_value);
   const positionValue = balance * (CONFIG.positionPct / 100);
-  const qty = Math.max(1, Math.floor(positionValue / range.close)); // use close for qty calc
+  const qty = Math.max(1, Math.floor(positionValue / entryPrice));
 
-  log(`${sym}: Position = $${positionValue.toFixed(2)} (${CONFIG.positionPct}%) = ${qty} shares @ $${range.close.toFixed(2)}`);
+  log(`${sym}: Position = $${positionValue.toFixed(2)} (${CONFIG.positionPct}%) = ${qty} shares @ $${entryPrice.toFixed(2)}`);
 
   // Place bracket order
   const order = await placeBracketOrder(sym, side, entryPrice, stopPrice, targetPrice, qty);
