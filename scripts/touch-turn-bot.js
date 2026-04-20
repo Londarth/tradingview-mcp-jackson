@@ -56,6 +56,16 @@ function saveLog() {
   } catch (e) { /* ignore */ }
 }
 
+let saveInterval = null;
+
+function startPeriodicSave() {
+  saveInterval = setInterval(() => saveLog(), 5 * 60 * 1000);
+}
+
+function stopPeriodicSave() {
+  if (saveInterval) clearInterval(saveInterval);
+}
+
 async function writeSnapshot(extra = {}) {
   try {
     const acct = await retry(() => alpaca.getAccount());
@@ -418,6 +428,7 @@ async function runBot() {
 
   // Write initial snapshot
   await writeSnapshot();
+  startPeriodicSave();
 
   // Verify Alpaca connection
   let account;
@@ -553,6 +564,7 @@ runBot().catch(err => {
 async function shutdown(signal) {
   log(`Shutting down (${signal})...`);
   await tgShutdown();
+  stopPeriodicSave();
   saveLog();
   process.exit(0);
 }
