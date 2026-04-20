@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import 'dotenv/config';
+import { fetchBarsPaginated, norm5, normD, computeDailyATRMap } from './lib/alpaca-data.js';
+import { createSMA, createATR, createRSI, createSessionVWAP } from './lib/indicators.js';
+import { computeStats, combineSymbolResults } from './lib/backtest-utils.js';
 
 const SCANNER_UNIVERSE = [
   // Proven winners from training (PF > 1.5)
@@ -8,105 +11,6 @@ const SCANNER_UNIVERSE = [
   'DIS', 'F', 'GM', 'KEYS', 'MU', 'PLTR', 'SNAP',
 ];
 const SCANNER_TOP_N = 5;
-
-// ─── Data fetching ───
-
-async function fetchBarsPaginated(symbol, timeframe, startDate, endDate) {
-  const headers = {
-    'APCA-API-KEY-ID': process.env.ALPACA_API_KEY,
-    'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY,
-  };
-  let allBars = [];
-  let pageToken;
-
-  do {
-    const params = new URLSearchParams({
-      symbols: symbol, timeframe, start: startDate, end: endDate,
-      feed: 'iex', limit: '10000', sort: 'asc',
-    });
-    if (pageToken) params.set('page_token', pageToken);
-
-    const resp = await fetch(`https://data.alpaca.markets/v2/stocks/bars?${params}`, { headers });
-    if (!resp.ok) throw new Error(`Alpaca API ${resp.status}: ${await resp.text()}`);
-    const data = await resp.json();
-    const bars = data.bars?.[symbol] || [];
-    allBars = allBars.concat(bars);
-    pageToken = data.next_page_token;
-  } while (pageToken);
-
-  return allBars;
-}
-
-function norm5(b) { return { ts: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v, vwap: b.vw }; }
-function normD(b) { return { ts: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v }; }
-
-// ─── Indicator closures ───
-
-function createSMA(length) {
-  const buf = [];
-  let sum = 0;
-  return {
-    push(val) { buf.push(val); sum += val; if (buf.length > length) sum -= buf.shift(); },
-    value() { return buf.length >= length ? sum / buf.length : null; },
-    ready() { return buf.length >= length; },
-  };
-}
-
-function createATR(period) {
-  const buf = [];
-  let prevClose = null;
-  return {
-    push(bar) {
-      const tr = prevClose !== null
-        ? Math.max(bar.high - bar.low, Math.abs(bar.high - prevClose), Math.abs(bar.low - prevClose))
-        : bar.high - bar.low;
-      buf.push(tr);
-      if (buf.length > period) buf.shift();
-      prevClose = bar.close;
-    },
-    value() { return buf.length >= period ? buf.reduce((a, b) => a + b, 0) / buf.length : null; },
-    ready() { return buf.length >= period; },
-  };
-}
-
-function createRSI(period) {
-  let avgGain = null, avgLoss = null, prevClose = null, seedCount = 0, seedGains = 0, seedLosses = 0;
-  return {
-    push(close) {
-      if (prevClose === null) { prevClose = close; return; }
-      const change = close - prevClose;
-      prevClose = close;
-      const gain = change > 0 ? change : 0;
-      const loss = change < 0 ? -change : 0;
-      if (avgGain === null) {
-        seedGains += gain; seedLosses += loss; seedCount++;
-        if (seedCount >= period) { avgGain = seedGains / period; avgLoss = seedLosses / period; }
-      } else {
-        avgGain = (avgGain * (period - 1) + gain) / period;
-        avgLoss = (avgLoss * (period - 1) + loss) / period;
-      }
-    },
-    value() {
-      if (avgGain === null) return null;
-      if (avgLoss === 0) return 100;
-      return 100 - 100 / (1 + avgGain / avgLoss);
-    },
-    ready() { return avgGain !== null; },
-  };
-}
-
-function createSessionVWAP() {
-  let cumTPV = 0, cumVol = 0;
-  return {
-    push(bar) {
-      const tp = (bar.high + bar.low + bar.close) / 3;
-      cumTPV += tp * bar.volume;
-      cumVol += bar.volume;
-    },
-    value() { return cumVol > 0 ? cumTPV / cumVol : null; },
-    reset() { cumTPV = 0; cumVol = 0; },
-  };
-}
 
 // ─── Timezone helpers ───
 
@@ -120,25 +24,6 @@ function getHHMM_ET(isoTs) {
 function getDateStr(isoTs) {
   const d = new Date(isoTs);
   return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-}
-
-// ─── Daily ATR map ───
-
-function computeDailyATRMap(dailyBars, period = 14) {
-  const map = new Map();
-  if (dailyBars.length < period + 1) return map;
-  for (let i = period; i < dailyBars.length; i++) {
-    let sum = 0;
-    for (let j = i - period + 1; j <= i; j++) {
-      const prev = dailyBars[j - 1];
-      const cur = dailyBars[j];
-      const tr = Math.max(cur.high - cur.low, Math.abs(cur.high - prev.close), Math.abs(cur.low - prev.close));
-      sum += tr;
-    }
-    const dateStr = getDateStr(dailyBars[i].ts);
-    map.set(dateStr, sum / period);
-  }
-  return map;
 }
 
 // ─── RVOL Scanner ───
@@ -471,25 +356,6 @@ function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap, scann
   return { trades, ...computeStats(trades, initialCapital, equityCurve, maxDrawdown), finalEquity: equity, initialCapital };
 }
 
-// ─── Stats ───
-
-function computeStats(trades, initialCapital, equityCurve, maxDrawdown) {
-  const wins = trades.filter(t => t.pnl > 0);
-  const losses = trades.filter(t => t.pnl <= 0);
-  const totalWins = wins.reduce((s, t) => s + t.pnl, 0);
-  const totalLosses = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
-  const netPnL = trades.reduce((s, t) => s + t.pnl, 0);
-  const profitFactor = totalLosses > 0 ? totalWins / totalLosses : totalWins > 0 ? Infinity : 0;
-
-  return {
-    totalTrades: trades.length, wins: wins.length, losses: losses.length,
-    winRate: trades.length > 0 ? (wins.length / trades.length * 100) : 0,
-    netPnL, avgWin: wins.length > 0 ? totalWins / wins.length : 0,
-    avgLoss: losses.length > 0 ? totalLosses / losses.length : 0,
-    maxDrawdown: maxDrawdown * 100, profitFactor, equityCurve,
-  };
-}
-
 // ─── Reporting ───
 
 function printReport(a, b, c, symbol, startDate, endDate) {
@@ -544,40 +410,6 @@ function printTradeLog(name, trades, initialCapital) {
 }
 
 // ─── Scanner mode ───
-
-function combineSymbolResults(allResults, initialCapital) {
-  const allTrades = Object.values(allResults)
-    .flatMap(r => r.trades)
-    .sort((a, b) => a.entryDate.localeCompare(b.entryDate) || a.entryPrice - b.entryPrice);
-
-  const wins = allTrades.filter(t => t.pnl > 0);
-  const losses = allTrades.filter(t => t.pnl <= 0);
-  const totalWins = wins.reduce((s, t) => s + t.pnl, 0);
-  const totalLosses = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
-  const netPnL = allTrades.reduce((s, t) => s + t.pnl, 0);
-
-  let equity = initialCapital;
-  let peakEquity = equity;
-  let maxDrawdown = 0;
-  const equityCurve = [equity];
-  for (const t of allTrades) {
-    equity += t.pnl;
-    peakEquity = Math.max(peakEquity, equity);
-    maxDrawdown = Math.max(maxDrawdown, (peakEquity - equity) / peakEquity);
-    equityCurve.push(equity);
-  }
-
-  return {
-    totalTrades: allTrades.length, wins: wins.length, losses: losses.length,
-    winRate: allTrades.length > 0 ? (wins.length / allTrades.length * 100) : 0,
-    netPnL, avgWin: wins.length > 0 ? totalWins / wins.length : 0,
-    avgLoss: losses.length > 0 ? totalLosses / losses.length : 0,
-    maxDrawdown: maxDrawdown * 100,
-    profitFactor: totalLosses > 0 ? totalWins / totalLosses : totalWins > 0 ? Infinity : 0,
-    equityCurve, finalEquity: equity, initialCapital,
-    perSymbol: allResults,
-  };
-}
 
 async function runScannerMode(startDate, endDate) {
   console.log(`Scanner mode: fetching data for ${SCANNER_UNIVERSE.length} symbols...`);
