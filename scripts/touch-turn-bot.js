@@ -28,6 +28,10 @@ const CONFIG = {
   minATR: 0.50,
 };
 
+let activeOrderId = null;
+let activeSymbol = null;
+let isShuttingDown = false;
+
 // ─── Alpaca client ───
 const alpaca = new Alpaca({
   keyId: process.env.ALPACA_API_KEY,
@@ -269,6 +273,7 @@ async function placeBracketOrder(sym, side, entryPrice, stopPrice, targetPrice, 
 // ─── Monitor order status ───
 async function monitorOrder(orderId, sym, untilHHMM) {
   while (getHHMM() < untilHHMM) {
+    if (isShuttingDown) return { filled: false, status: 'shutdown' };
     try {
       if (DRY_RUN) {
         // Simulate: assume not filled
@@ -318,6 +323,7 @@ async function monitorPosition(sym, untilHHMM) {
   let lastPnl = 0;
 
   while (getHHMM() < untilHHMM) {
+    if (isShuttingDown) return { closed: false, pnl: lastPnl };
     try {
       if (DRY_RUN) {
         log(`${sym}: DRY RUN — monitoring position (would close at ${untilHHMM})`);
@@ -506,6 +512,8 @@ async function runBot() {
 
   // Place bracket order
   const order = await placeBracketOrder(sym, side, entryPrice, stopPrice, targetPrice, qty);
+  activeOrderId = order?.id;
+  activeSymbol = sym;
 
   // Write snapshot with order info
   await writeSnapshot({
@@ -526,6 +534,7 @@ async function runBot() {
 
   // Monitor order until session end
   const orderResult = await monitorOrder(order.id, sym, CONFIG.sessionEnd);
+  activeOrderId = null;
 
   if (!orderResult.filled) {
     log(`${sym}: Order not filled — no trade executed`);
@@ -563,8 +572,38 @@ runBot().catch(err => {
 
 async function shutdown(signal) {
   log(`Shutting down (${signal})...`);
-  await tgShutdown();
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  // Cancel open orders
+  if (activeOrderId && !DRY_RUN) {
+    try {
+      await retry(() => alpaca.cancelOrder(activeOrderId));
+      log(`Cancelled open order ${activeOrderId}`);
+    } catch (e) {
+      log(`Cancel order failed: ${e.message}`, 'error');
+    }
+  }
+
+  // Close open position if past hard exit time
+  if (activeSymbol && getHHMM() >= CONFIG.hardExit && !DRY_RUN) {
+    try {
+      const pos = await retry(() => alpaca.getPosition(activeSymbol)).catch(() => null);
+      if (pos && parseFloat(pos.qty) > 0) {
+        await retry(() => alpaca.createOrder({
+          symbol: activeSymbol, qty: pos.qty,
+          side: pos.side === 'long' ? 'sell' : 'buy',
+          type: 'market', time_in_force: 'day',
+        }));
+        log(`Closed position in ${activeSymbol} during shutdown`, 'trade');
+      }
+    } catch (e) {
+      log(`Position close during shutdown failed: ${e.message}`, 'error');
+    }
+  }
+
   stopPeriodicSave();
+  await tgShutdown();
   saveLog();
   process.exit(0);
 }
