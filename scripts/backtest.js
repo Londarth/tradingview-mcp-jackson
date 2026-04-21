@@ -5,23 +5,10 @@ import { createSMA, createATR, createRSI, createSessionVWAP } from './lib/indica
 import { computeStats, combineSymbolResults } from './lib/backtest-utils.js';
 
 import { filterCandidate, rankCandidates, DEFAULT_FILTERS } from './lib/scanner.js';
+import { getHHMM_ET, getDateStr } from './lib/time.js';
 
 const SCANNER_UNIVERSE = (process.env.UNIVERSE || 'SOFI,INTC,Z,DAL,RIVN,SBUX,CCL,DIS,F,GM,PLTR,SNAP')
   .split(',').map(s => s.trim()).filter(Boolean);
-
-// ─── Timezone helpers ───
-
-function getHHMM_ET(isoTs) {
-  const d = new Date(isoTs);
-  const s = d.toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false, hour: '2-digit', minute: '2-digit' });
-  const [h, m] = s.split(':').map(Number);
-  return h * 100 + m;
-}
-
-function getDateStr(isoTs) {
-  const d = new Date(isoTs);
-  return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-}
 
 // ─── Bot Scanner (matches touch-turn-bot.js logic) ───
 

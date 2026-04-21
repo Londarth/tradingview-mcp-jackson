@@ -3,6 +3,7 @@ import 'dotenv/config';
 import { fetchBarsPaginated, normD, computeDailyATRMap } from './lib/alpaca-data.js';
 import { createSMA, createATR, createRSI } from './lib/indicators.js';
 import { computeStats, combineSymbolResults } from './lib/backtest-utils.js';
+import { getDateStr } from './lib/time.js';
 
 const ETF_UNIVERSE = ['SPY', 'QQQ', 'DIA', 'IWM', 'XLK', 'XLF', 'XLE', 'XLV', 'XLY', 'XLP', 'XLU'];
 const STOCK_UNIVERSE = ['SOFI', 'INTC', 'Z', 'DAL', 'RIVN', 'SBUX', 'CCL'];
@@ -48,13 +49,6 @@ function createNDayHigh(period) {
 function computeIBS(bar) {
   const range = bar.high - bar.low;
   return range > 0 ? (bar.close - bar.low) / range : 0.5;
-}
-
-// ─── Helpers ───
-
-function getDateStr(isoTs) {
-  const d = new Date(isoTs);
-  return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 }
 
 // ─── Swing exit check ───

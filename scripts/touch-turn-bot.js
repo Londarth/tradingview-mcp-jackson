@@ -11,6 +11,7 @@ import {
   telegramEnabled,
 } from './telegram.js';
 import { retry } from './lib/retry.js';
+import { getNYTime, getHHMM, getTodayStr } from './lib/time.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -104,20 +105,6 @@ async function writeSnapshot(extra = {}) {
   } catch (e) {
     log(`Snapshot write error: ${e.message}`, 'error');
   }
-}
-
-// ─── Time helpers ───
-function getNYTime() {
-  return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
-}
-
-function getHHMM() {
-  const ny = getNYTime();
-  return ny.getHours() * 100 + ny.getMinutes();
-}
-
-function getTodayStr() {
-  return getNYTime().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
