@@ -145,11 +145,12 @@ async function handleStatus() {
       msg += `\n\n📋 No open positions`;
     }
 
-    if (snapshot.order) {
-      const o = snapshot.order;
-      msg += `\n\n⏳ <b>Pending Order</b>`;
-      msg += `\n${o.side.toUpperCase()} ${o.qty} ${o.symbol} @ $${Number(o.price).toFixed(2)}`;
-      msg += `\nSL: $${Number(o.stop).toFixed(2)} | TP: $${Number(o.target).toFixed(2)}`;
+    if (snapshot.orders && snapshot.orders.length > 0) {
+      for (const o of snapshot.orders) {
+        msg += `\n\n⏳ <b>Pending Order</b>`;
+        msg += `\n${o.side.toUpperCase()} ${o.qty} ${o.symbol} @ $${Number(o.price).toFixed(2)}`;
+        msg += `\nSL: $${Number(o.stop).toFixed(2)} | TP: $${Number(o.target).toFixed(2)}`;
+      }
     }
 
     msg += `\n\n<i>Snapshot ${snapshot.ageMin}m old</i>`;

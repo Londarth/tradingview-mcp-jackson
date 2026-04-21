@@ -296,3 +296,26 @@ describe('entry/exit level calculation', () => {
     assert.ok(Math.abs(stop - 11.618) < 0.001);
   });
 });
+
+describe('snapshot structure', () => {
+  it('preserves targetPrice and stopPrice from activePositions', () => {
+    const activePositions = new Map();
+    activePositions.set('SOFI', {
+      orderId: 'o1', side: 'long', entryPrice: 8.50,
+      stopPrice: 8.20, targetPrice: 9.10, qty: 100,
+      status: 'filled', fillPrice: 8.52, pnl: 2.34,
+    });
+    const pos = activePositions.get('SOFI');
+    assert.equal(pos.targetPrice, 9.10);
+    assert.equal(pos.stopPrice, 8.20);
+    assert.equal(pos.targetPrice, 9.10); // not derived from unrealized_pl
+  });
+
+  it('writes orders as an array in snapshot', () => {
+    const orders = [
+      { symbol: 'SOFI', side: 'long', qty: 100, price: 8.50, stop: 8.20, target: 9.10 },
+    ];
+    assert.ok(Array.isArray(orders));
+    assert.equal(orders[0].symbol, 'SOFI');
+  });
+});

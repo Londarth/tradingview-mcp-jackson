@@ -77,16 +77,20 @@ async function writeSnapshot(extra = {}) {
   try {
     const acct = await retry(() => alpaca.getAccount());
     const positions = await retry(() => alpaca.getPositions());
-    const posData = positions.map(p => ({
-      symbol: p.symbol,
-      side: p.side,
-      qty: parseInt(p.qty),
-      entryPrice: parseFloat(p.avg_entry_price),
-      currentPrice: parseFloat(p.current_price),
-      unrealizedPl: parseFloat(p.unrealized_pl),
-      targetPrice: parseFloat(p.avg_entry_price) + parseFloat(p.unrealized_pl),
-      stopPrice: 0,
-    }));
+    const posData = positions.map(p => {
+      const sym = p.symbol;
+      const tracked = activePositions.get(sym);
+      return {
+        symbol: sym,
+        side: p.side,
+        qty: parseInt(p.qty),
+        entryPrice: parseFloat(p.avg_entry_price),
+        currentPrice: parseFloat(p.current_price),
+        unrealizedPl: parseFloat(p.unrealized_pl),
+        targetPrice: tracked?.targetPrice ?? parseFloat(p.avg_entry_price),
+        stopPrice: tracked?.stopPrice ?? parseFloat(p.avg_entry_price),
+      };
+    });
     const snap = {
       ts: Date.now(),
       mode: IS_PAPER ? 'PAPER' : 'LIVE',
