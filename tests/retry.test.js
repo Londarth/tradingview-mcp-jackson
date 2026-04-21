@@ -38,4 +38,29 @@ describe('retry', () => {
     const result = await retry(() => Promise.resolve('default'));
     assert.equal(result, 'default');
   });
+
+  it('does not retry on 4xx client errors', async () => {
+    let calls = 0;
+    const fn = () => {
+      calls++;
+      throw new Error('Alpaca API 400: bad request');
+    };
+    await assert.rejects(
+      () => retry(fn, { maxRetries: 3, baseDelay: 10 }),
+      { message: /400/ }
+    );
+    assert.equal(calls, 1); // should fail immediately
+  });
+
+  it('retries on 429 rate limit', async () => {
+    let calls = 0;
+    const fn = () => {
+      calls++;
+      if (calls < 2) throw new Error('Alpaca API 429: rate limit');
+      return Promise.resolve('ok');
+    };
+    const result = await retry(fn, { maxRetries: 3, baseDelay: 10 });
+    assert.equal(result, 'ok');
+    assert.equal(calls, 2);
+  });
 });

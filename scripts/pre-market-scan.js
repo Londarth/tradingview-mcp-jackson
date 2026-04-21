@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import { filterCandidate, rankCandidates, DEFAULT_FILTERS } from './lib/scanner.js';
 import { sendTelegram, telegramEnabled } from './telegram.js';
 import { retry } from './lib/retry.js';
+import { getNYTime, getTodayStr } from './lib/time.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -23,11 +24,6 @@ const headers = {
   'APCA-API-KEY-ID': process.env.ALPACA_API_KEY,
   'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY,
 };
-
-function getNYTime() {
-  return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
-}
-function getTodayStr() { return getNYTime().toISOString().split('T')[0]; }
 
 // ─── Fetch daily ATR for universe ───
 

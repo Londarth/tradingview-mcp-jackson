@@ -7,10 +7,11 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
-  sendTelegram, tgTradeSignal, tgDryRunSignal, tgError, tgEODSummary, tgShutdown,
+  sendTelegram, tgTradeSignal, tgDryRunSignal, tgError, tgShutdown,
   telegramEnabled,
 } from './telegram.js';
 import { retry } from './lib/retry.js';
+import { getNYTime, getHHMM, getTodayStr } from './lib/time.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -77,16 +78,20 @@ async function writeSnapshot(extra = {}) {
   try {
     const acct = await retry(() => alpaca.getAccount());
     const positions = await retry(() => alpaca.getPositions());
-    const posData = positions.map(p => ({
-      symbol: p.symbol,
-      side: p.side,
-      qty: parseInt(p.qty),
-      entryPrice: parseFloat(p.avg_entry_price),
-      currentPrice: parseFloat(p.current_price),
-      unrealizedPl: parseFloat(p.unrealized_pl),
-      targetPrice: parseFloat(p.avg_entry_price) + parseFloat(p.unrealized_pl),
-      stopPrice: 0,
-    }));
+    const posData = positions.map(p => {
+      const sym = p.symbol;
+      const tracked = activePositions.get(sym);
+      return {
+        symbol: sym,
+        side: p.side,
+        qty: parseInt(p.qty),
+        entryPrice: parseFloat(p.avg_entry_price),
+        currentPrice: parseFloat(p.current_price),
+        unrealizedPl: parseFloat(p.unrealized_pl),
+        targetPrice: tracked?.targetPrice ?? parseFloat(p.avg_entry_price),
+        stopPrice: tracked?.stopPrice ?? parseFloat(p.avg_entry_price),
+      };
+    });
     const snap = {
       ts: Date.now(),
       mode: IS_PAPER ? 'PAPER' : 'LIVE',
@@ -100,20 +105,6 @@ async function writeSnapshot(extra = {}) {
   } catch (e) {
     log(`Snapshot write error: ${e.message}`, 'error');
   }
-}
-
-// ─── Time helpers ───
-function getNYTime() {
-  return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
-}
-
-function getHHMM() {
-  const ny = getNYTime();
-  return ny.getHours() * 100 + ny.getMinutes();
-}
-
-function getTodayStr() {
-  return getNYTime().toISOString().split('T')[0];
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }

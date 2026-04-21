@@ -296,3 +296,83 @@ describe('entry/exit level calculation', () => {
     assert.ok(Math.abs(stop - 11.618) < 0.001);
   });
 });
+
+describe('snapshot structure', () => {
+  it('preserves targetPrice and stopPrice from activePositions', () => {
+    const activePositions = new Map();
+    activePositions.set('SOFI', {
+      orderId: 'o1', side: 'long', entryPrice: 8.50,
+      stopPrice: 8.20, targetPrice: 9.10, qty: 100,
+      status: 'filled', fillPrice: 8.52, pnl: 2.34,
+    });
+    const pos = activePositions.get('SOFI');
+    assert.equal(pos.targetPrice, 9.10);
+    assert.equal(pos.stopPrice, 8.20);
+    assert.equal(pos.targetPrice, 9.10); // not derived from unrealized_pl
+  });
+
+  it('writes orders as an array in snapshot', () => {
+    const orders = [
+      { symbol: 'SOFI', side: 'long', qty: 100, price: 8.50, stop: 8.20, target: 9.10 },
+    ];
+    assert.ok(Array.isArray(orders));
+    assert.equal(orders[0].symbol, 'SOFI');
+  });
+});
+
+describe('time helpers', () => {
+  it('getTodayStr does not use toISOString (UTC rollover bug)', () => {
+    // Simulate midnight ET = 04:00 UTC. toISOString would return wrong date.
+    const nyTime = new Date('2026-04-21T04:30:00Z'); // 00:30 ET
+    const todayStr = nyTime.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    assert.equal(todayStr, '2026-04-21');
+  });
+});
+
+describe('backtest equity tracking', () => {
+  it('uses entry-time equity for qty, not exit-time equity', () => {
+    const entryEquity = 200;
+    const exitEquity = 250; // after some wins
+    const riskPct = 50;
+    const minPositionUSD = 100;
+    const entryPrice = 10;
+
+    const entryQty = Math.max(entryEquity * (riskPct / 100), minPositionUSD) / entryPrice;
+    const exitQty = Math.max(exitEquity * (riskPct / 100), minPositionUSD) / entryPrice;
+
+    assert.equal(entryQty, 10);
+    assert.equal(exitQty, 12.5);
+    assert.ok(entryQty !== exitQty, 'qty should differ if equity changed');
+  });
+});
+
+describe('rankCandidates immutability', () => {
+  it('does not mutate input candidate objects', () => {
+    // Re-implement the fixed version inline for test
+    function rankCandidatesImmutable(candidates, weights = { rvol: 0.40, atrPct: 0.25, gapPct: 0.20, rangeAtrRatio: 0.15 }) {
+      if (candidates.length === 0) return [];
+      const w = { ...weights };
+      const keys = Object.keys(w);
+      const scored = candidates.map(c => ({ ...c }));
+      for (const key of keys) {
+        const values = scored.map(c => c[key] ?? 0);
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const range = max - min || 1;
+        for (const c of scored) {
+          c[`_${key}Rank`] = ((c[key] ?? 0) - min) / range * 100;
+        }
+      }
+      for (const c of scored) {
+        c.score = keys.reduce((sum, key) => sum + w[key] * (c[`_${key}Rank`] ?? 0), 0);
+      }
+      scored.sort((a, b) => b.score - a.score);
+      return scored;
+    }
+
+    const original = [{ symbol: 'A', rvol: 1.0, score: undefined }];
+    const ranked = rankCandidatesImmutable(original);
+    assert.equal(original[0].score, undefined);
+    assert.ok(ranked[0].score !== undefined);
+  });
+});

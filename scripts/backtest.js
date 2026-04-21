@@ -5,23 +5,10 @@ import { createSMA, createATR, createRSI, createSessionVWAP } from './lib/indica
 import { computeStats, combineSymbolResults } from './lib/backtest-utils.js';
 
 import { filterCandidate, rankCandidates, DEFAULT_FILTERS } from './lib/scanner.js';
+import { getHHMM_ET, getDateStr } from './lib/time.js';
 
 const SCANNER_UNIVERSE = (process.env.UNIVERSE || 'SOFI,INTC,Z,DAL,RIVN,SBUX,CCL,DIS,F,GM,PLTR,SNAP')
   .split(',').map(s => s.trim()).filter(Boolean);
-
-// ─── Timezone helpers ───
-
-function getHHMM_ET(isoTs) {
-  const d = new Date(isoTs);
-  const s = d.toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false, hour: '2-digit', minute: '2-digit' });
-  const [h, m] = s.split(':').map(Number);
-  return h * 100 + m;
-}
-
-function getDateStr(isoTs) {
-  const d = new Date(isoTs);
-  return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-}
 
 // ─── Bot Scanner (matches touch-turn-bot.js logic) ───
 
@@ -336,8 +323,9 @@ function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap, scann
   const equityCurve = [equity];
 
   function calcQty() {
-    const positionValue = Math.max(equity * (config.riskPct / 100), config.minPositionUSD || 20);
-    return positionValue / (position ? position.entryPrice : 1);
+    if (!position) return 0;
+    const positionValue = Math.max(position.entryEquity * (config.riskPct / 100), config.minPositionUSD || 20);
+    return positionValue / position.entryPrice;
   }
 
   for (let i = 0; i < bars.length; i++) {
@@ -377,13 +365,15 @@ function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap, scann
         sessionVWAP, smaVolume, atr5m, rsi14, dailyATRMap, config,
       });
       if (signal.action === 'enter') {
-        const positionValue = Math.max(equity * (config.riskPct / 100), config.minPositionUSD || 20);
+        const entryEquity = equity;
+        const positionValue = Math.max(entryEquity * (config.riskPct / 100), config.minPositionUSD || 20);
         const qty = positionValue / bar.close;
         position = {
           side: signal.side, entryPrice: bar.close,
           stopPrice: signal.stop, targetPrice: signal.target,
           stopType: signal.stopType || 'fixed',
           entryDate: barDate,
+          entryEquity,
         };
       }
     }
@@ -392,7 +382,7 @@ function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap, scann
   // Force-close at end of data
   if (position) {
     const lastBar = bars[bars.length - 1];
-    const positionValue = Math.max(equity * (config.riskPct / 100), config.minPositionUSD || 20);
+    const positionValue = Math.max(position.entryEquity * (config.riskPct / 100), config.minPositionUSD || 20);
     const qty = positionValue / position.entryPrice;
     const pnl = (lastBar.close - position.entryPrice) * qty * (position.side === 'short' ? -1 : 1);
     equity += pnl;

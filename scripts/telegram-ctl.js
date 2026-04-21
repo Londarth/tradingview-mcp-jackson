@@ -145,11 +145,12 @@ async function handleStatus() {
       msg += `\n\n📋 No open positions`;
     }
 
-    if (snapshot.order) {
-      const o = snapshot.order;
-      msg += `\n\n⏳ <b>Pending Order</b>`;
-      msg += `\n${o.side.toUpperCase()} ${o.qty} ${o.symbol} @ $${Number(o.price).toFixed(2)}`;
-      msg += `\nSL: $${Number(o.stop).toFixed(2)} | TP: $${Number(o.target).toFixed(2)}`;
+    if (snapshot.orders && snapshot.orders.length > 0) {
+      for (const o of snapshot.orders) {
+        msg += `\n\n⏳ <b>Pending Order</b>`;
+        msg += `\n${o.side.toUpperCase()} ${o.qty} ${o.symbol} @ $${Number(o.price).toFixed(2)}`;
+        msg += `\nSL: $${Number(o.stop).toFixed(2)} | TP: $${Number(o.target).toFixed(2)}`;
+      }
     }
 
     msg += `\n\n<i>Snapshot ${snapshot.ageMin}m old</i>`;
@@ -212,7 +213,7 @@ async function handleMessage(msg) {
 async function poll() {
   try {
     const url = `${TG_API}/getUpdates?offset=${lastUpdateId + 1}&timeout=30&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D`;
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: AbortSignal.timeout(35000) });
     if (!resp.ok) {
       console.error(`Poll error: ${resp.status}`);
       return;

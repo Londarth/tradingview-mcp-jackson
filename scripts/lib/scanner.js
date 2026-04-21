@@ -48,21 +48,24 @@ export function rankCandidates(candidates, weights = DEFAULT_WEIGHTS) {
   const w = { ...DEFAULT_WEIGHTS, ...weights };
   const keys = Object.keys(w);
 
+  // Clone candidates so we don't mutate caller's data
+  const scored = candidates.map(c => ({ ...c }));
+
   // Normalize each metric to 0-100 rank
   for (const key of keys) {
-    const values = candidates.map(c => c[key] ?? 0);
+    const values = scored.map(c => c[key] ?? 0);
     const min = Math.min(...values);
     const max = Math.max(...values);
     const range = max - min || 1;
-    for (const c of candidates) {
+    for (const c of scored) {
       c[`_${key}Rank`] = ((c[key] ?? 0) - min) / range * 100;
     }
   }
 
-  for (const c of candidates) {
+  for (const c of scored) {
     c.score = keys.reduce((sum, key) => sum + w[key] * (c[`_${key}Rank`] ?? 0), 0);
   }
 
-  candidates.sort((a, b) => b.score - a.score);
-  return candidates;
+  scored.sort((a, b) => b.score - a.score);
+  return scored;
 }
