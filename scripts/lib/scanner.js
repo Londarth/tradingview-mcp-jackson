@@ -44,6 +44,10 @@ export function filterCandidate({ symbol, dailyATR, price, prevClose, openPrice,
 // Rank candidates by composite score. Each factor is normalized to 0-100 within the group.
 export function rankCandidates(candidates, weights = DEFAULT_WEIGHTS) {
   if (candidates.length === 0) return [];
+  if (candidates.length === 1) {
+    const scored = [{ ...candidates[0], score: 100 }];
+    return scored;
+  }
 
   const w = { ...DEFAULT_WEIGHTS, ...weights };
   const keys = Object.keys(w);

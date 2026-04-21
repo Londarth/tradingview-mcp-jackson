@@ -325,6 +325,8 @@ function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap, scann
   let peakEquity = equity;
   let maxDrawdown = 0;
   const equityCurve = [equity];
+  const dailyLossLimitPct = config.dailyLossLimitPct || 0;
+  let dailyPnl = 0;
 
   function calcQty() {
     if (!position) return 0;
@@ -347,6 +349,7 @@ function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap, scann
       currentDate = barDate;
       sessionVWAP.reset();
       state = stateInitFn();
+      dailyPnl = 0;
     }
 
     sessionVWAP.push(bar);
@@ -363,16 +366,28 @@ function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap, scann
         const costs = applyCosts(position.entryPrice, exit.exitPrice, qty, position.side);
         const pnl = rawPnl - costs;
         equity += pnl;
+        dailyPnl += pnl;
         trades.push({ ...position, exitPrice: exit.exitPrice, exitType: exit.exitType, pnl, qty, costs });
         position = null;
         peakEquity = Math.max(peakEquity, equity);
         maxDrawdown = Math.max(maxDrawdown, (peakEquity - equity) / peakEquity);
         equityCurve.push(equity);
+
+        // Daily loss limit check
+        if (dailyLossLimitPct > 0 && dailyPnl < 0 && (Math.abs(dailyPnl) / (equity - dailyPnl + initialCapital * config.riskPct / 100)) * 100 > dailyLossLimitPct) {
+          // Stop trading for the rest of this day (state resets on new day anyway)
+          state.tradedToday = true; // prevent re-entry in strategies that use this flag
+        }
       }
     }
 
     // Check entries (skip if scanner mode and day not selected)
     if (!position && (!scannerDays || scannerDays.has(barDate))) {
+      // Daily loss limit: skip entries if limit hit
+      if (dailyLossLimitPct > 0 && dailyPnl < 0 && (Math.abs(dailyPnl) / equity * 100) > dailyLossLimitPct) {
+        continue;
+      }
+
       const signal = processBarFn(bar, state, hhmm, {
         sessionVWAP, smaVolume, atr5m, rsi14, dailyATRMap, config,
       });
@@ -413,6 +428,8 @@ function printReport(a, b, c, symbol, startDate, endDate) {
   const usd = v => (v >= 0 ? '+' : '') + '$' + v.toFixed(2);
   const pct = v => v.toFixed(1) + '%';
   const num = v => v.toFixed(2);
+  const sharpe = v => v === 0 ? 'N/A' : v.toFixed(2);
+  const calmar = v => v === 0 ? 'N/A' : v.toFixed(2);
 
   console.log('='.repeat(78));
   console.log(`  BACKTEST: ${symbol}  (${startDate} to ${endDate})`);
@@ -430,6 +447,8 @@ function printReport(a, b, c, symbol, startDate, endDate) {
   console.log(`${'Avg Loss'.padEnd(22)}${usd(a.avgLoss).padStart(18)}${usd(b.avgLoss).padStart(18)}${usd(c.avgLoss).padStart(18)}`);
   console.log(`${'Max Drawdown'.padEnd(22)}${pct(a.maxDrawdown).padStart(18)}${pct(b.maxDrawdown).padStart(18)}${pct(c.maxDrawdown).padStart(18)}`);
   console.log(`${'Profit Factor'.padEnd(22)}${num(a.profitFactor).padStart(18)}${num(b.profitFactor).padStart(18)}${num(c.profitFactor).padStart(18)}`);
+  console.log(`${'Sharpe Ratio'.padEnd(22)}${sharpe(a.sharpeRatio).padStart(18)}${sharpe(b.sharpeRatio).padStart(18)}${sharpe(c.sharpeRatio).padStart(18)}`);
+  console.log(`${'Calmar Ratio'.padEnd(22)}${calmar(a.calmarRatio).padStart(18)}${calmar(b.calmarRatio).padStart(18)}${calmar(c.calmarRatio).padStart(18)}`);
   console.log('-'.repeat(76));
 
   printTradeLog('AZIZ ORB+VWAP', a.trades, a.initialCapital);
@@ -466,23 +485,36 @@ async function runScannerMode(startDate, endDate) {
   console.log(`Scanner mode: fetching data for ${SCANNER_UNIVERSE.length} symbols...`);
   const allBars5m = {};
   const allDailyATRMaps = {};
+
+  // Parallelize data fetching
+  const fetchResults = await Promise.allSettled(SCANNER_UNIVERSE.map(async (symbol) => {
+    const raw5 = await fetchBarsPaginated(symbol, '5Min', startDate, endDate);
+    if (raw5.length === 0) return { symbol, error: 'no data' };
+    const bars = raw5.map(norm5);
+
+    const dailyStart = new Date(Date.parse(startDate) - 45 * 86400000).toISOString().split('T')[0];
+    const rawD = await fetchBarsPaginated(symbol, '1Day', dailyStart, endDate);
+    const dailyBars = rawD.map(normD);
+    const dailyATRMap = computeDailyATRMap(dailyBars, 14);
+
+    return { symbol, bars, dailyATRMap, barCount: bars.length };
+  }));
+
   let fetched = 0;
-
-  for (const symbol of SCANNER_UNIVERSE) {
-    try {
-      const raw5 = await fetchBarsPaginated(symbol, '5Min', startDate, endDate);
-      if (raw5.length === 0) { console.log(`  ${symbol}: no data`); continue; }
-      allBars5m[symbol] = raw5.map(norm5);
-
-      const dailyStart = new Date(Date.parse(startDate) - 45 * 86400000).toISOString().split('T')[0];
-      const rawD = await fetchBarsPaginated(symbol, '1Day', dailyStart, endDate);
-      const dailyBars = rawD.map(normD);
-      allDailyATRMaps[symbol] = computeDailyATRMap(dailyBars, 14);
-      fetched++;
-      console.log(`  ${symbol}: ${allBars5m[symbol].length} bars`);
-    } catch (e) {
-      console.log(`  ${symbol}: ${e.message}`);
+  for (const result of fetchResults) {
+    if (result.status === 'rejected') {
+      console.log(`  ${'?'}: ${result.reason?.message || 'fetch error'}`);
+      continue;
     }
+    const { symbol, bars, dailyATRMap, barCount, error } = result.value;
+    if (error) {
+      console.log(`  ${symbol}: ${error}`);
+      continue;
+    }
+    allBars5m[symbol] = bars;
+    allDailyATRMaps[symbol] = dailyATRMap;
+    fetched++;
+    console.log(`  ${symbol}: ${barCount} bars`);
   }
 
   console.log(`\nFetched ${fetched}/${SCANNER_UNIVERSE.length} symbols`);
@@ -498,8 +530,9 @@ async function runScannerMode(startDate, endDate) {
 // Simulate the bot trading one position at a time with scanner selections
 function runBotSimulation(allBars5m, allDailyATRMaps, selections, topN) {
   const config = {
-    sessionEnd: 1100, hardExit: 1130, positionPct: 10, minPositionUSD: 100, initialCapital: 200,
+    sessionEnd: 1100, hardExit: 1130, positionPct: 10, minPositionUSD: 100, initialCapital: 400,
     targetFib: 0.618, rrRatio: 2.0, atrPctThreshold: 0.25,
+    riskPct: 0, dailyLossLimitPct: 3,
   };
 
   let equity = config.initialCapital;
@@ -509,6 +542,7 @@ function runBotSimulation(allBars5m, allDailyATRMaps, selections, topN) {
   let maxDrawdown = 0;
   const equityCurve = [equity];
   const perDayLog = [];
+  let dailyPnl = 0;
 
   // Pre-index bars by (date, symbol) for fast lookup
   const barsByDateSymbol = new Map();
@@ -549,6 +583,7 @@ function runBotSimulation(allBars5m, allDailyATRMaps, selections, topN) {
 
     let tradedToday = false;
     let daySymbol = selectedToday.length > 0 ? selectedToday[0].symbol : '—';
+    dailyPnl = 0;
 
     // Process bars for selected symbols only (in time order)
     const dayBarsAll = [];
@@ -582,6 +617,7 @@ function runBotSimulation(allBars5m, allDailyATRMaps, selections, topN) {
           const costs = (position.entryPrice + exit.exitPrice) * position.qty * (SLIPPAGE_BPS / 10000) + position.qty * COMMISSION_PER_SHARE * 2;
           const pnl = rawPnl - costs;
           equity += pnl;
+          dailyPnl += pnl;
           trades.push({
             symbol: position.symbol, side: position.side,
             entryPrice: position.entryPrice, exitPrice: exit.exitPrice,
@@ -591,11 +627,21 @@ function runBotSimulation(allBars5m, allDailyATRMaps, selections, topN) {
           peakEquity = Math.max(peakEquity, equity);
           maxDrawdown = Math.max(maxDrawdown, (peakEquity - equity) / peakEquity);
           equityCurve.push(equity);
+
+          // Daily loss limit check
+          if (config.dailyLossLimitPct > 0 && dailyPnl < 0 && (Math.abs(dailyPnl) / equity * 100) > config.dailyLossLimitPct) {
+            break; // stop trading for the day
+          }
         }
       }
 
       // Check entry: only for scanner-selected symbols, one trade per day
       if (!position && !tradedToday && selectedSymbols.has(bar.symbol) && hhmm >= 945 && hhmm < 1100) {
+        // Skip if daily loss limit hit
+        if (config.dailyLossLimitPct > 0 && dailyPnl < 0 && (Math.abs(dailyPnl) / equity * 100) > config.dailyLossLimitPct) {
+          continue;
+        }
+
         const or = openRanges.get(bar.symbol);
         if (or && or.range > 0) {
           const dailyATR = allDailyATRMaps[bar.symbol]?.get(dateStr) || 0;
@@ -630,13 +676,15 @@ function runBotSimulation(allBars5m, allDailyATRMaps, selections, topN) {
 
     // Force-close any open position at end of day
     if (position) {
-      // Get the last bar for this position's symbol
       const key = `${dateStr}|${position.symbol}`;
       const symBars = barsByDateSymbol.get(key) || [];
       const lastBar = symBars[symBars.length - 1];
       if (lastBar) {
-        const pnl = (lastBar.close - position.entryPrice) * position.qty * (position.side === 'short' ? -1 : 1);
+        const rawPnl = (lastBar.close - position.entryPrice) * position.qty * (position.side === 'short' ? -1 : 1);
+        const costs = (position.entryPrice + lastBar.close) * position.qty * (SLIPPAGE_BPS / 10000) + position.qty * COMMISSION_PER_SHARE * 2;
+        const pnl = rawPnl - costs;
         equity += pnl;
+        dailyPnl += pnl;
         trades.push({
           symbol: position.symbol, side: position.side,
           entryPrice: position.entryPrice, exitPrice: lastBar.close,
@@ -658,6 +706,10 @@ function runBotSimulation(allBars5m, allDailyATRMaps, selections, topN) {
   const totalLosses = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
   const netPnL = trades.reduce((s, t) => s + t.pnl, 0);
 
+  // Compute Sharpe and Calmar from equity curve
+  const sharpeRatio = computeSharpe(equityCurve);
+  const calmarRatio = computeCalmar(equityCurve, maxDrawdown);
+
   return {
     trades, perDayLog, topN,
     totalTrades: trades.length, wins: wins.length, losses: losses.length,
@@ -667,6 +719,7 @@ function runBotSimulation(allBars5m, allDailyATRMaps, selections, topN) {
     maxDrawdown: maxDrawdown * 100,
     profitFactor: totalLosses > 0 ? totalWins / totalLosses : totalWins > 0 ? Infinity : 0,
     equityCurve, finalEquity: equity, initialCapital: config.initialCapital,
+    sharpeRatio, calmarRatio,
     daysWithSelection: selections.size,
     perSymbol: trades.reduce((acc, t) => {
       if (!acc[t.symbol]) acc[t.symbol] = { trades: [], totalTrades: 0, netPnL: 0 };
@@ -678,17 +731,42 @@ function runBotSimulation(allBars5m, allDailyATRMaps, selections, topN) {
   };
 }
 
+function computeSharpe(equityCurve) {
+  if (equityCurve.length < 2) return 0;
+  const returns = [];
+  for (let i = 1; i < equityCurve.length; i++) {
+    returns.push((equityCurve[i] - equityCurve[i - 1]) / equityCurve[i - 1]);
+  }
+  const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
+  const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length;
+  const stdDev = Math.sqrt(variance);
+  if (stdDev === 0) return 0;
+  return (mean / stdDev) * Math.sqrt(252);
+}
+
+function computeCalmar(equityCurve, maxDrawdown) {
+  if (maxDrawdown === 0 || equityCurve.length < 2) return 0;
+  const initial = equityCurve[0];
+  const final = equityCurve[equityCurve.length - 1];
+  const totalReturn = (final - initial) / initial;
+  const years = Math.max(equityCurve.length / 252, 1 / 252);
+  const cagr = Math.pow(1 + totalReturn, 1 / years) - 1;
+  return cagr / (maxDrawdown * 100 || 1);
+}
+
 function printSimulationReport(result, startDate, endDate, topN) {
   const usd = v => (v >= 0 ? '+' : '') + '$' + v.toFixed(2);
   const pct = v => v.toFixed(1) + '%';
   const num = v => v.toFixed(2);
+  const sharpe = v => v === 0 ? 'N/A' : v.toFixed(2);
+  const calmar = v => v === 0 ? 'N/A' : v.toFixed(2);
 
   console.log('\n' + '='.repeat(76));
   console.log(`  BOT SIMULATION — Top ${topN}/day (${startDate} to ${endDate})`);
   console.log('='.repeat(76));
   console.log('');
   console.log(`  Selection: rank by range/ATR + composite | Filters: ${JSON.stringify(DEFAULT_FILTERS)}`);
-  console.log(`  Capital: $${result.initialCapital} | Risk: 10% equity/trade (min $100) | 1 position at a time`);
+  console.log(`  Capital: $${result.initialCapital} | Risk: 10% equity/trade (min $100) | Slippage: ${SLIPPAGE_BPS} bps | Commission: $${COMMISSION_PER_SHARE}/share | Daily loss limit: 3%`);
   console.log(`  Days with selections: ${result.daysWithSelection}`);
   console.log('');
   console.log(`${'Metric'.padEnd(22)}${'Value'.padStart(18)}`);
@@ -703,6 +781,8 @@ function printSimulationReport(result, startDate, endDate, topN) {
   console.log(`${'Avg Loss'.padEnd(22)}${usd(result.avgLoss).padStart(18)}`);
   console.log(`${'Max Drawdown'.padEnd(22)}${pct(result.maxDrawdown).padStart(18)}`);
   console.log(`${'Profit Factor'.padEnd(22)}${num(result.profitFactor).padStart(18)}`);
+  console.log(`${'Sharpe Ratio'.padEnd(22)}${sharpe(result.sharpeRatio).padStart(18)}`);
+  console.log(`${'Calmar Ratio'.padEnd(22)}${calmar(result.calmarRatio).padStart(18)}`);
   console.log('-'.repeat(40));
 
   // Per-symbol breakdown
@@ -775,14 +855,14 @@ async function main() {
   console.log(`  Got ${dailyBars.length} daily bars, ATR map: ${dailyATRMap.size} dates`);
 
   const configA = {
-    sessionEnd: 1130, riskPct: 50, minPositionUSD: 100, initialCapital: 200,
+    sessionEnd: 1130, riskPct: 50, minPositionUSD: 100, initialCapital: 400,
     useAtrFilter: true,
     useRvolFilter: true, rvolThreshold: 1.5, volumeMALength: 12,
     targetR: 2.0,
   };
 
   const configB = {
-    sessionEnd: 1130, riskPct: 50, minPositionUSD: 100, initialCapital: 200,
+    sessionEnd: 1130, riskPct: 50, minPositionUSD: 100, initialCapital: 400,
     atrDistMult: 1.0, stopAtrMult: 0.5,
     useRsiFilter: true, rsiMaxLong: 70, rsiMinShort: 30,
     useVolFilter: true, volumeMALength: 12,
@@ -790,7 +870,7 @@ async function main() {
   };
 
   const configC = {
-    sessionEnd: 1130, riskPct: 50, minPositionUSD: 100, initialCapital: 200,
+    sessionEnd: 1130, riskPct: 50, minPositionUSD: 100, initialCapital: 400,
     useAtrFilter: true, atrPctThreshold: 0.25,
   };
 
