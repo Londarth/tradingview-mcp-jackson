@@ -67,29 +67,8 @@ export async function tgDryRunSignal(sym, side, price, stop, target, rr, qty) {
   );
 }
 
-export async function tgEODSummary(results) {
-  let msg = `📊 <b>End of Day Report</b>\n${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}\n\n`;
-  let totalPnl = 0;
-  for (const r of results) {
-    const emoji = r.pnl >= 0 ? '✅' : '🛑';
-    msg += `${emoji} <b>${r.symbol}</b> ${r.side.toUpperCase()}: ${r.pnl >= 0 ? '+' : ''}$${r.pnl.toFixed(2)}\n`;
-    totalPnl += r.pnl;
-  }
-  msg += `\n<b>Total: ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}</b>`;
-  await sendTelegram(msg);
-}
-
 export async function tgError(message) {
   await sendTelegram(`❌ <b>Error</b>\n${message}`);
-}
-
-export async function tgStartup(mode, symbols) {
-  await sendTelegram(
-    `🚀 <b>Touch &amp; Turn Bot Started</b>\n` +
-    `Mode: ${mode}\n` +
-    `Symbols: ${symbols.join(', ')}\n` +
-    `Window: 9:45–11:00 ET`
-  );
 }
 
 export async function tgShutdown() {

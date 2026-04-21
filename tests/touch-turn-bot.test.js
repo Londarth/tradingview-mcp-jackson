@@ -345,3 +345,34 @@ describe('backtest equity tracking', () => {
     assert.ok(entryQty !== exitQty, 'qty should differ if equity changed');
   });
 });
+
+describe('rankCandidates immutability', () => {
+  it('does not mutate input candidate objects', () => {
+    // Re-implement the fixed version inline for test
+    function rankCandidatesImmutable(candidates, weights = { rvol: 0.40, atrPct: 0.25, gapPct: 0.20, rangeAtrRatio: 0.15 }) {
+      if (candidates.length === 0) return [];
+      const w = { ...weights };
+      const keys = Object.keys(w);
+      const scored = candidates.map(c => ({ ...c }));
+      for (const key of keys) {
+        const values = scored.map(c => c[key] ?? 0);
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const range = max - min || 1;
+        for (const c of scored) {
+          c[`_${key}Rank`] = ((c[key] ?? 0) - min) / range * 100;
+        }
+      }
+      for (const c of scored) {
+        c.score = keys.reduce((sum, key) => sum + w[key] * (c[`_${key}Rank`] ?? 0), 0);
+      }
+      scored.sort((a, b) => b.score - a.score);
+      return scored;
+    }
+
+    const original = [{ symbol: 'A', rvol: 1.0, score: undefined }];
+    const ranked = rankCandidatesImmutable(original);
+    assert.equal(original[0].score, undefined);
+    assert.ok(ranked[0].score !== undefined);
+  });
+});

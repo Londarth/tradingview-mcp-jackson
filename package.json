@@ -12,6 +12,9 @@
   "homepage": "https://github.com/Londarth/scalp-bot",
   "description": "Alpaca trading bot with Telegram control and backtesting",
   "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "main": "scripts/touch-turn-bot.js",
   "scripts": {
     "start": "node scripts/touch-turn-bot.js",

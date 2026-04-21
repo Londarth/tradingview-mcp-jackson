@@ -7,7 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
-  sendTelegram, tgTradeSignal, tgDryRunSignal, tgError, tgEODSummary, tgShutdown,
+  sendTelegram, tgTradeSignal, tgDryRunSignal, tgError, tgShutdown,
   telegramEnabled,
 } from './telegram.js';
 import { retry } from './lib/retry.js';
