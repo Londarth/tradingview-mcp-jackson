@@ -213,7 +213,7 @@ async function handleMessage(msg) {
 async function poll() {
   try {
     const url = `${TG_API}/getUpdates?offset=${lastUpdateId + 1}&timeout=30&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D`;
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: AbortSignal.timeout(35000) });
     if (!resp.ok) {
       console.error(`Poll error: ${resp.status}`);
       return;
