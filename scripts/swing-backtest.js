@@ -5,6 +5,15 @@ import { createSMA, createATR, createRSI } from './lib/indicators.js';
 import { computeStats, combineSymbolResults } from './lib/backtest-utils.js';
 import { getDateStr } from './lib/time.js';
 
+const SLIPPAGE_BPS = parseFloat(process.env.SLIPPAGE_BPS) || 5;
+const COMMISSION_PER_SHARE = parseFloat(process.env.COMMISSION_PER_SHARE) || 0.005;
+
+function applyCosts(entryPrice, exitPrice, qty) {
+  const slippageCost = (entryPrice + exitPrice) * qty * (SLIPPAGE_BPS / 10000);
+  const commissionCost = qty * COMMISSION_PER_SHARE * 2;
+  return slippageCost + commissionCost;
+}
+
 const ETF_UNIVERSE = ['SPY', 'QQQ', 'DIA', 'IWM', 'XLK', 'XLF', 'XLE', 'XLV', 'XLY', 'XLP', 'XLU'];
 const STOCK_UNIVERSE = ['SOFI', 'INTC', 'Z', 'DAL', 'RIVN', 'SBUX', 'CCL'];
 const FULL_UNIVERSE = [...ETF_UNIVERSE, ...STOCK_UNIVERSE];
@@ -191,11 +200,12 @@ function runSwingBacktest(bars, processBarFn, stateInitFn, config, startDate) {
       barsInPosition++;
       const exit = checkSwingExit(bar, position, barsInPosition, prevBarHigh, ind);
       if (exit.closed) {
-        const pnl = (exit.exitPrice - position.entryPrice) * position.qty;
+        const costs = applyCosts(position.entryPrice, exit.exitPrice, position.qty);
+        const pnl = (exit.exitPrice - position.entryPrice) * position.qty - costs;
         equity += pnl;
         trades.push({
           ...position, exitPrice: exit.exitPrice, exitType: exit.exitType,
-          pnl, barsHeld: barsInPosition,
+          pnl, barsHeld: barsInPosition, costs,
         });
         position = null;
         barsInPosition = 0;
@@ -228,11 +238,12 @@ function runSwingBacktest(bars, processBarFn, stateInitFn, config, startDate) {
   // Force-close at end of data
   if (position) {
     const lastBar = bars[bars.length - 1];
-    const pnl = (lastBar.close - position.entryPrice) * position.qty;
+    const costs = applyCosts(position.entryPrice, lastBar.close, position.qty);
+    const pnl = (lastBar.close - position.entryPrice) * position.qty - costs;
     equity += pnl;
     trades.push({
       ...position, exitPrice: lastBar.close, exitType: 'data_end',
-      pnl, barsHeld: barsInPosition,
+      pnl, barsHeld: barsInPosition, costs,
     });
     equityCurve.push(equity);
   }
@@ -272,7 +283,7 @@ function printSwingReport(results, symbol, startDate, endDate) {
   printSwingTradeLog('FAIL BREAKOUT', fb.trades, fb.initialCapital);
 
   console.log('');
-  console.log(`Capital: $${crsi2.initialCapital} | Risk: ${crsi2.initialCapital * 0.15 / crsi2.initialCapital * 100}% equity/trade (min $25) | Daily bars | No slippage/commission`);
+  console.log(`Capital: $${crsi2.initialCapital} | Risk: ${crsi2.initialCapital * 0.15 / crsi2.initialCapital * 100}% equity/trade (min $25) | Daily bars | Slippage: ${SLIPPAGE_BPS} bps | Commission: $${COMMISSION_PER_SHARE}/share`);
 }
 
 function printSwingTradeLog(name, trades, initialCapital) {
@@ -373,7 +384,7 @@ function printScannerReport(results, startDate, endDate) {
     }
   }
 
-  console.log(`\nCapital: $${crsi2.initialCapital} | Risk: 15% equity/trade (min $25) | Daily bars | No slippage/commission`);
+  console.log(`\nCapital: $${crsi2.initialCapital} | Risk: 15% equity/trade (min $25) | Daily bars | Slippage: ${SLIPPAGE_BPS} bps | Commission: $${COMMISSION_PER_SHARE}/share`);
 }
 
 // ─── Main ───
