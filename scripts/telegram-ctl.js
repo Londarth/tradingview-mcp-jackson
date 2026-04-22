@@ -35,7 +35,7 @@ const START_COOLDOWN_MS = 10000;
 export function parseCommand(text) {
   if (!text || !text.startsWith('/')) return null;
   const parts = text.trim().split(/\s+/);
-  return parts[0].toLowerCase();
+  return parts[0].split('@')[0].toLowerCase();
 }
 
 export function isAuthorized(chatId) {
@@ -278,16 +278,11 @@ async function handleMessage(msg) {
     console.log(`Ignoring message from unauthorized chat: ${msg.chat.id}`);
     return;
   }
-
   const cmd = parseCommand(msg.text);
   if (!cmd) return;
-
-  // Handle /start@botname style commands
-  const normalizedCmd = cmd.split('@')[0];
-
-  const handler = COMMANDS[normalizedCmd];
+  const handler = COMMANDS[cmd];
   if (handler) {
-    console.log(`Command: ${normalizedCmd} from ${msg.chat.id}`);
+    console.log(`Command: ${cmd} from ${msg.chat.id}`);
     await handler();
   }
 }

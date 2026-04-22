@@ -39,7 +39,7 @@ describe('parseCommand', () => {
   });
 
   it('handles /start with bot mention (@botname)', () => {
-    assert.equal(parseCommand('/start@myScalpBot'), '/start@myscalpbot');
+    assert.equal(parseCommand('/start@myScalpBot'), '/start');
   });
 });
 
