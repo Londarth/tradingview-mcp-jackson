@@ -46,6 +46,7 @@ export function createRSI(period) {
     },
     value() {
       if (avgGain === null) return null;
+      if (avgGain === 0 && avgLoss === 0) return 50;
       if (avgLoss === 0) return 100;
       return 100 - 100 / (1 + avgGain / avgLoss);
     },

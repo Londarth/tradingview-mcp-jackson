@@ -62,6 +62,12 @@ describe('createRSI', () => {
     rsi.push(13); rsi.push(12); rsi.push(11); rsi.push(10);
     assert.equal(rsi.value(), 0);
   });
+
+  it('returns 50 when no price movement', () => {
+    const rsi = createRSI(3);
+    rsi.push(10); rsi.push(10); rsi.push(10); rsi.push(10);
+    assert.equal(rsi.value(), 50);
+  });
 });
 
 describe('createSessionVWAP', () => {
