@@ -28,7 +28,9 @@ const ALPACA_HEADERS = {
 
 let lastUpdateId = 0;
 let lastStartCmd = 0;
+let pollFailCount = 0;
 const START_COOLDOWN_MS = 10000;
+const POLL_MAX_BACKOFF_MS = 30000;
 
 // ─── Pure functions (exported for testing) ───
 
@@ -295,10 +297,14 @@ async function poll() {
     const resp = await fetch(url, { signal: AbortSignal.timeout(35000) });
     if (!resp.ok) {
       console.error(`Poll error: ${resp.status}`);
+      pollFailCount++;
       return;
     }
     const data = await resp.json();
-    if (!data.ok || !data.result) return;
+    if (!data.ok || !data.result) {
+      pollFailCount++;
+      return;
+    }
 
     for (const update of data.result) {
       lastUpdateId = update.update_id;
@@ -316,8 +322,10 @@ async function poll() {
         await answerCallbackQuery(cb.id);
       }
     }
+    pollFailCount = 0;
   } catch (err) {
     console.error(`Poll failed: ${err.message}`);
+    pollFailCount++;
   }
 }
 
@@ -333,6 +341,11 @@ async function main() {
 
   while (true) {
     await poll();
+    if (pollFailCount > 0) {
+      const delay = Math.min(1000 * Math.pow(2, Math.min(pollFailCount - 1, 5)), POLL_MAX_BACKOFF_MS);
+      console.log(`Poll failure #${pollFailCount}, retrying in ${delay}ms`);
+      await new Promise(r => setTimeout(r, delay));
+    }
   }
 }
 
