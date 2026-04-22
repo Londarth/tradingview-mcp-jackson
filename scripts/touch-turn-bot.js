@@ -186,17 +186,24 @@ async function fetchDailyATRs(symbols) {
     'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY,
   };
 
-  const results = await Promise.allSettled(symbols.map(async (sym) => {
-    const url = `https://data.alpaca.markets/v2/stocks/bars?symbols=${sym}&timeframe=1Day&start=${start}&end=${end}&limit=21&feed=iex`;
-    const resp = await retry(() => fetch(url, { headers, signal: AbortSignal.timeout(CONFIG.apiTimeoutMs) }));
-    if (!resp.ok) throw new Error(`Alpaca API ${resp.status}: ${await resp.text().catch(() => 'unknown')}`);
-    const data = await resp.json();
-    const rawBars = data.bars?.[sym] || [];
-    const bars = rawBars.map(b => ({ high: b.h, low: b.l, close: b.c }));
-    if (bars.length > 0) priceMap[sym] = bars[bars.length - 1].close;
-    atrMap[sym] = calcATR(bars, 14);
-    log(`${sym}: ATR=$${atrMap[sym]?.toFixed(2) ?? 'N/A'} | Last=$${priceMap[sym]?.toFixed(2) ?? 'N/A'}`);
-  }));
+  const BATCH_SIZE = 4;
+  const results = [];
+  for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+    const batch = symbols.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.allSettled(batch.map(async (sym) => {
+      const url = `https://data.alpaca.markets/v2/stocks/bars?symbols=${sym}&timeframe=1Day&start=${start}&end=${end}&limit=21&feed=iex`;
+      const resp = await retry(() => fetch(url, { headers, signal: AbortSignal.timeout(CONFIG.apiTimeoutMs) }));
+      if (!resp.ok) throw new Error(`Alpaca API ${resp.status}: ${await resp.text().catch(() => 'unknown')}`);
+      const data = await resp.json();
+      const rawBars = data.bars?.[sym] || [];
+      const bars = rawBars.map(b => ({ high: b.h, low: b.l, close: b.c }));
+      if (bars.length > 0) priceMap[sym] = bars[bars.length - 1].close;
+      atrMap[sym] = calcATR(bars, 14);
+      log(`${sym}: ATR=$${atrMap[sym]?.toFixed(2) ?? 'N/A'} | Last=$${priceMap[sym]?.toFixed(2) ?? 'N/A'}`);
+    }));
+    results.push(...batchResults);
+    if (i + BATCH_SIZE < symbols.length) await sleep(500);
+  }
 
   for (let i = 0; i < results.length; i++) {
     if (results[i].status === 'rejected') {
