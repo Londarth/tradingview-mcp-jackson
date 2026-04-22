@@ -32,19 +32,21 @@ async function fetchDailyData(symbols) {
   const start = new Date(Date.now() - 45 * 86400000).toISOString().split('T')[0];
   const results = {};
 
-  for (const sym of symbols) {
-    try {
+  const BATCH_SIZE = 4;
+  for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+    const batch = symbols.slice(i, i + BATCH_SIZE);
+    const outcomes = await Promise.allSettled(batch.map(async (sym) => {
       const url = `https://data.alpaca.markets/v2/stocks/bars?symbols=${sym}&timeframe=1Day&start=${start}&end=${end}&limit=25&feed=iex`;
       const resp = await retry(() => fetch(url, { headers }));
       const data = await resp.json();
       const rawBars = data.bars?.[sym] || [];
-      if (rawBars.length < 15) { console.log(`  ${sym}: insufficient daily data`); continue; }
+      if (rawBars.length < 15) throw new Error(`${sym}: insufficient daily data`);
 
       // Compute 14-period ATR
       let atrSum = 0;
-      for (let i = rawBars.length - 14; i < rawBars.length; i++) {
-        const prev = rawBars[i - 1];
-        const cur = rawBars[i];
+      for (let j = rawBars.length - 14; j < rawBars.length; j++) {
+        const prev = rawBars[j - 1];
+        const cur = rawBars[j];
         const tr = Math.max(cur.h - cur.l, Math.abs(cur.h - prev.c), Math.abs(cur.l - prev.c));
         atrSum += tr;
       }
@@ -55,10 +57,23 @@ async function fetchDailyData(symbols) {
       // Compute 20-day average volume
       const avgVol = rawBars.slice(-20).reduce((s, b) => s + b.v, 0) / Math.min(20, rawBars.length);
 
-      results[sym] = { dailyATR, lastClose, prevClose, avgVol };
-      console.log(`  ${sym}: ATR=$${dailyATR.toFixed(2)} | Last=$${lastClose.toFixed(2)} | AvgVol=${(avgVol / 1e6).toFixed(1)}M`);
-    } catch (err) {
-      console.log(`  ${sym}: ${err.message}`);
+      return { sym, dailyATR, lastClose, prevClose, avgVol };
+    }));
+
+    for (const outcome of outcomes) {
+      if (outcome.status === 'fulfilled') {
+        const { sym, dailyATR, lastClose, prevClose, avgVol } = outcome.value;
+        results[sym] = { dailyATR, lastClose, prevClose, avgVol };
+        console.log(`  ${sym}: ATR=$${dailyATR.toFixed(2)} | Last=$${lastClose.toFixed(2)} | AvgVol=${(avgVol / 1e6).toFixed(1)}M`);
+      } else {
+        const msg = outcome.reason?.message || String(outcome.reason);
+        console.log(`  ${msg}`);
+      }
+    }
+
+    // Small delay between batches to avoid rate limits
+    if (i + BATCH_SIZE < symbols.length) {
+      await new Promise(r => setTimeout(r, 200));
     }
   }
   return results;
