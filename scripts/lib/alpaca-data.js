@@ -1,6 +1,6 @@
 // scripts/lib/alpaca-data.js
 
-export async function fetchBarsPaginated(symbol, timeframe, startDate, endDate) {
+export async function fetchBarsPaginated(symbol, timeframe, startDate, endDate, timeout = 30000) {
   const headers = {
     'APCA-API-KEY-ID': process.env.ALPACA_API_KEY,
     'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY,
@@ -15,7 +15,7 @@ export async function fetchBarsPaginated(symbol, timeframe, startDate, endDate) 
     });
     if (pageToken) params.set('page_token', pageToken);
 
-    const resp = await fetch(`https://data.alpaca.markets/v2/stocks/bars?${params}`, { headers });
+    const resp = await fetch(`https://data.alpaca.markets/v2/stocks/bars?${params}`, { headers, signal: AbortSignal.timeout(timeout) });
     if (!resp.ok) throw new Error(`Alpaca API ${resp.status}: ${await resp.text()}`);
     const data = await resp.json();
     const bars = data.bars?.[symbol] || [];
