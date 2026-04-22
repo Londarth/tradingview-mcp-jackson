@@ -89,3 +89,23 @@ export async function tgError(message) {
 export async function tgShutdown() {
   await sendTelegram(`🛑 <b>Bot Stopped</b>`);
 }
+
+// ─── Orphaned position buttons ───
+
+export const ORPHAN_BUTTONS = [[
+  { text: '❌ Close All', callback_data: '/close_orphaned' },
+  { text: '✅ Keep All', callback_data: '/keep_orphaned' },
+]];
+
+export async function tgOrphanedPositions(positions) {
+  if (!positions || positions.length === 0) return;
+  let msg = `⚠️ <b>Orphaned Positions Detected</b>\n`;
+  msg += `These positions are open in Alpaca but not tracked by Touch &amp; Turn:\n\n`;
+  for (const p of positions) {
+    const pnlSign = parseFloat(p.unrealized_pl) >= 0 ? '+' : '';
+    msg += `• <b>${p.symbol}</b> ${p.side.toUpperCase()} ${p.qty}×$${parseFloat(p.avg_entry_price).toFixed(2)}`;
+    msg += ` | ${pnlSign}$${parseFloat(p.unrealized_pl).toFixed(2)}\n`;
+  }
+  msg += `\nThese may be from another bot or manual trades.`;
+  await sendTelegram(msg, { buttons: ORPHAN_BUTTONS });
+}

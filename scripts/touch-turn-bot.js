@@ -8,7 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   sendTelegram, tgTradeSignalsBatch, tgError, tgShutdown,
-  telegramEnabled,
+  telegramEnabled, tgOrphanedPositions,
 } from './telegram.js';
 import { retry } from './lib/retry.js';
 import { getNYTime, getHHMM, getTodayStr } from './lib/time.js';
@@ -53,6 +53,7 @@ const IS_PAPER = process.env.ALPACA_PAPER !== 'false';
 const LOG_FILE = path.join(__dirname, 'touch-turn-log.json');
 const SNAPSHOT_FILE = path.join(__dirname, 'account-snapshot.json');
 const STATE_FILE = path.join(__dirname, 'bot-state.json');
+const ORPHANED_FILE = path.join(__dirname, 'orphaned-positions.json');
 const WATCHLIST_FILE = process.env.WATCHLIST_PATH || path.join(__dirname, 'watchlist.json');
 
 // ─── Logging ───
@@ -111,6 +112,18 @@ function restoreState() {
   } catch (e) {
     log(`State restore error: ${e.message}`, 'error');
     return false;
+  }
+}
+
+function saveOrphanedPositions(positions) {
+  try {
+    if (positions.length === 0) {
+      try { fs.unlinkSync(ORPHANED_FILE); } catch {}
+      return;
+    }
+    fs.writeFileSync(ORPHANED_FILE, JSON.stringify({ ts: Date.now(), positions }, null, 2));
+  } catch (e) {
+    log(`Orphaned positions save error: ${e.message}`, 'error');
   }
 }
 
@@ -473,6 +486,9 @@ async function runBot() {
   const restored = restoreState();
   startPeriodicSave();
 
+  // Clean up any stale orphaned positions file from previous run
+  try { fs.unlinkSync(ORPHANED_FILE); } catch {}
+
   // Verify Alpaca connection
   let account;
   try {
@@ -774,6 +790,22 @@ async function runBot() {
   // Hard exit: cancel pending orders, close filled positions
   await closeAllPositions();
 
+  // Check for orphaned positions (in Alpaca but not tracked by bot)
+  try {
+    const allAlpacaPositions = await retry(() => alpaca.getPositions());
+    const trackedSymbols = new Set([...activePositions.keys()]);
+    const orphaned = allAlpacaPositions.filter(p => !trackedSymbols.has(p.symbol));
+    if (orphaned.length > 0) {
+      log(`WARNING: ${orphaned.length} orphaned position(s) in Alpaca: ${orphaned.map(p => p.symbol).join(', ')}`, 'error');
+      saveOrphanedPositions(orphaned);
+      await tgOrphanedPositions(orphaned);
+    } else {
+      saveOrphanedPositions([]);
+    }
+  } catch (e) {
+    log(`Orphaned position check error: ${e.message}`, 'error');
+  }
+
   // Build trade results for EOD report
   const tradeResults = [...activePositions.entries()].map(([sym, pos]) => ({
     symbol: sym,
@@ -803,8 +835,25 @@ async function shutdown(signal) {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
+  // Save logs first (always, even if close fails)
+  saveLog();
+
   try {
     await closeAllPositions();
+
+    // Check for orphaned positions (in Alpaca but not tracked by bot)
+    try {
+      const allAlpacaPositions = await retry(() => alpaca.getPositions());
+      const trackedSymbols = new Set([...activePositions.keys()]);
+      const orphaned = allAlpacaPositions.filter(p => !trackedSymbols.has(p.symbol));
+      if (orphaned.length > 0) {
+        log(`WARNING: ${orphaned.length} orphaned position(s) in Alpaca: ${orphaned.map(p => p.symbol).join(', ')}`, 'error');
+        saveOrphanedPositions(orphaned);
+        await tgOrphanedPositions(orphaned);
+      }
+    } catch (e) {
+      log(`Orphaned position check error during shutdown: ${e.message}`, 'error');
+    }
   } catch (e) {
     log(`closeAllPositions error during shutdown: ${e.message}`, 'error');
   }
@@ -812,7 +861,6 @@ async function shutdown(signal) {
   stopPeriodicSave();
   persistState();
   await tgShutdown();
-  saveLog();
   process.exit(0);
 }
 

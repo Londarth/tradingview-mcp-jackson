@@ -142,3 +142,10 @@ describe('escapeHtml', () => {
     assert.equal(escapeHtml('INTC LONG order placed'), 'INTC LONG order placed');
   });
 });
+
+describe('orphaned position commands', () => {
+  it('parseCommand handles /close_orphaned and /keep_orphaned', () => {
+    assert.equal(parseCommand('/close_orphaned'), '/close_orphaned');
+    assert.equal(parseCommand('/keep_orphaned'), '/keep_orphaned');
+  });
+});

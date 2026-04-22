@@ -708,3 +708,39 @@ describe('morning report ATR data', () => {
     assert.equal(Object.keys(atrMap).length, 0, 'empty ATR map = no scan data');
   });
 });
+
+describe('orphaned position detection', () => {
+  it('detects positions in Alpaca not tracked by bot', () => {
+    const activePositions = new Map();
+    activePositions.set('SOFI', { status: 'closed', pnl: 0 });
+    const alpacaPositions = [
+      { symbol: 'SOFI', side: 'long', qty: '100', unrealized_pl: '5.00', avg_entry_price: '8.50' },
+      { symbol: 'AAPL', side: 'long', qty: '50', unrealized_pl: '12.00', avg_entry_price: '150.00' },
+      { symbol: 'TSLA', side: 'short', qty: '20', unrealized_pl: '-3.00', avg_entry_price: '200.00' },
+    ];
+    const trackedSymbols = new Set([...activePositions.keys()]);
+    const orphaned = alpacaPositions.filter(p => !trackedSymbols.has(p.symbol));
+    assert.equal(orphaned.length, 2);
+    assert.equal(orphaned[0].symbol, 'AAPL');
+    assert.equal(orphaned[1].symbol, 'TSLA');
+  });
+
+  it('returns empty when all Alpaca positions are tracked', () => {
+    const activePositions = new Map();
+    activePositions.set('SOFI', { status: 'filled', pnl: 0 });
+    const alpacaPositions = [
+      { symbol: 'SOFI', side: 'long', qty: '100', unrealized_pl: '5.00', avg_entry_price: '8.50' },
+    ];
+    const trackedSymbols = new Set([...activePositions.keys()]);
+    const orphaned = alpacaPositions.filter(p => !trackedSymbols.has(p.symbol));
+    assert.equal(orphaned.length, 0);
+  });
+
+  it('returns empty when no Alpaca positions exist', () => {
+    const activePositions = new Map();
+    const alpacaPositions = [];
+    const trackedSymbols = new Set([...activePositions.keys()]);
+    const orphaned = alpacaPositions.filter(p => !trackedSymbols.has(p.symbol));
+    assert.equal(orphaned.length, 0);
+  });
+});

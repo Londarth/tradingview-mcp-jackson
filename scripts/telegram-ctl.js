@@ -16,6 +16,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const BOT_NAME = 'touch-turn';
 const LOG_PATH = join(__dirname, 'touch-turn-log.json');
 const SNAPSHOT_PATH = join(__dirname, 'account-snapshot.json');
+const ORPHANED_PATH = join(__dirname, 'orphaned-positions.json');
+
+const ALPACA_BASE = process.env.ALPACA_PAPER === 'false'
+  ? 'https://api.alpaca.markets'
+  : 'https://paper-api.alpaca.markets';
+const ALPACA_HEADERS = {
+  'APCA-API-KEY-ID': process.env.ALPACA_API_KEY || '',
+  'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY || '',
+};
 
 let lastUpdateId = 0;
 let lastStartCmd = 0;
@@ -183,7 +192,72 @@ async function handleHelp() {
     '/start — Start the trading bot\n' +
     '/stop — Stop the trading bot\n' +
     '/status — Show bot status and recent trades\n' +
-    '/help — Show this message',
+    '/help — Show this message\n\n' +
+    '⚠️ Orphaned position buttons appear automatically when detected.',
+    { buttons: MAIN_BUTTONS }
+  );
+}
+
+// ─── Orphaned position helpers ───
+
+async function readOrphanedPositions() {
+  try {
+    const data = await readFile(ORPHANED_PATH, 'utf8');
+    const parsed = JSON.parse(data);
+    // Only return if recent (within 30 minutes)
+    if (Date.now() - parsed.ts < 30 * 60 * 1000) {
+      return parsed.positions;
+    }
+  } catch {}
+  return [];
+}
+
+async function handleCloseOrphaned() {
+  const positions = await readOrphanedPositions();
+  if (positions.length === 0) {
+    await sendTelegram('No orphaned positions to close.', { buttons: MAIN_BUTTONS });
+    return;
+  }
+  let closed = 0, failed = 0;
+  for (const p of positions) {
+    try {
+      const side = p.side === 'long' ? 'sell' : 'buy';
+      const resp = await fetch(`${ALPACA_BASE}/v2/orders`, {
+        method: 'POST',
+        headers: { ...ALPACA_HEADERS, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: p.symbol,
+          qty: parseFloat(p.qty),
+          side,
+          type: 'market',
+          time_in_force: 'day',
+        }),
+      });
+      if (resp.ok) {
+        closed++;
+      } else {
+        failed++;
+        console.error(`Close failed for ${p.symbol}: ${resp.status}`);
+      }
+    } catch (e) {
+      failed++;
+      console.error(`Close orphaned ${p.symbol} error: ${e.message}`);
+    }
+  }
+  // Clean up orphaned file
+  try { const { unlink } = await import('fs/promises'); await unlink(ORPHANED_PATH); } catch {}
+  await sendTelegram(
+    `✅ Closed ${closed}/${positions.length} orphaned position(s)${failed > 0 ? ` (${failed} failed)` : ''}`,
+    { buttons: MAIN_BUTTONS }
+  );
+}
+
+async function handleKeepOrphaned() {
+  const positions = await readOrphanedPositions();
+  // Clean up orphaned file
+  try { const { unlink } = await import('fs/promises'); await unlink(ORPHANED_PATH); } catch {}
+  await sendTelegram(
+    `✅ Keeping ${positions.length} orphaned position(s) as-is`,
     { buttons: MAIN_BUTTONS }
   );
 }
@@ -195,6 +269,8 @@ const COMMANDS = {
   '/stop': handleStop,
   '/status': handleStatus,
   '/help': handleHelp,
+  '/close_orphaned': handleCloseOrphaned,
+  '/keep_orphaned': handleKeepOrphaned,
 };
 
 async function handleMessage(msg) {
