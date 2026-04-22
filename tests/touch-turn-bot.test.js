@@ -744,3 +744,42 @@ describe('orphaned position detection', () => {
     assert.equal(orphaned.length, 0);
   });
 });
+
+describe('bracket exit P&L by parent order ID', () => {
+  it('matches exit order by parent_order_id when available', () => {
+    const pos = { side: 'long', orderId: 'parent-123', fillPrice: 10, qty: 100 };
+    const orders = [
+      { side: 'sell', filled_avg_price: '11', filled_qty: '100', parent_order_id: 'parent-123' },
+      { side: 'sell', filled_avg_price: '15', filled_qty: '50', parent_order_id: 'other-999' },
+    ];
+    const exitSide = 'sell';
+    let realizedPnl = 0;
+    for (const o of orders) {
+      if (o.side === exitSide && o.filled_avg_price && parseFloat(o.filled_qty) > 0) {
+        if (o.parent_order_id && o.parent_order_id === pos.orderId) {
+          realizedPnl = (parseFloat(o.filled_avg_price) - pos.fillPrice) * parseFloat(o.filled_qty);
+          break;
+        }
+      }
+    }
+    assert.equal(realizedPnl, 100);
+  });
+
+  it('falls back to first matching exit when parent_order_id not present', () => {
+    const pos = { side: 'long', orderId: 'parent-123', fillPrice: 10, qty: 100 };
+    const orders = [
+      { side: 'sell', filled_avg_price: '12', filled_qty: '100' },
+    ];
+    const exitSide = 'sell';
+    let realizedPnl = 0;
+    for (const o of orders) {
+      if (o.side === exitSide && o.filled_avg_price && parseFloat(o.filled_qty) > 0) {
+        if (!o.parent_order_id) {
+          realizedPnl = (parseFloat(o.filled_avg_price) - pos.fillPrice) * parseFloat(o.filled_qty);
+          break;
+        }
+      }
+    }
+    assert.equal(realizedPnl, 200);
+  });
+});

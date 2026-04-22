@@ -728,13 +728,28 @@ async function runBot() {
             // Try to get realized P&L from Alpaca order history
             let realizedPnl = pos.pnl; // keep last known unrealized if available
             try {
-              const orders = await retry(() => alpaca.getOrders({ status: 'closed', limit: 5, symbols: sym }));
+              const orders = await retry(() => alpaca.getOrders({
+                status: 'closed',
+                limit: 20,
+                symbols: sym,
+                direction: 'desc',
+              }));
+              const exitSide = pos.side === 'long' ? 'sell' : 'buy';
               for (const o of orders) {
-                if (o.side === (pos.side === 'long' ? 'sell' : 'buy') && o.filled_avg_price) {
-                  const exitPrice = parseFloat(o.filled_avg_price);
-                  const filledQty = parseFloat(o.filled_qty) || pos.qty;
-                  realizedPnl = (exitPrice - (pos.fillPrice ?? pos.entryPrice)) * filledQty * (pos.side === 'short' ? -1 : 1);
-                  break;
+                if (o.side === exitSide && o.filled_avg_price && parseFloat(o.filled_qty) > 0) {
+                  // Prefer matching by parent_order_id (bracket legs relationship)
+                  if (o.parent_order_id && o.parent_order_id === pos.orderId) {
+                    const exitPrice = parseFloat(o.filled_avg_price);
+                    const filledQty = parseFloat(o.filled_qty) || pos.qty;
+                    realizedPnl = (exitPrice - (pos.fillPrice ?? pos.entryPrice)) * filledQty * (pos.side === 'short' ? -1 : 1);
+                    break;
+                  } else if (!o.parent_order_id) {
+                    // Fallback: if no parent_order_id field, use first matching exit
+                    const exitPrice = parseFloat(o.filled_avg_price);
+                    const filledQty = parseFloat(o.filled_qty) || pos.qty;
+                    realizedPnl = (exitPrice - (pos.fillPrice ?? pos.entryPrice)) * filledQty * (pos.side === 'short' ? -1 : 1);
+                    break;
+                  }
                 }
               }
             } catch (e) {
