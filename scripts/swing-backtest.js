@@ -50,7 +50,11 @@ function createNDayHigh(period) {
       if (buf.length > period) buf.shift();
     },
     value() { return buf.length >= period ? Math.max(...buf) : null; },
-    isNewHigh(bar) { return buf.length >= period && bar.high >= Math.max(...buf); },
+    isNewHigh(bar) {
+      if (buf.length < period) return false;
+      const prevHighs = buf.slice(0, -1);
+      return prevHighs.length >= period - 1 && bar.high >= Math.max(...prevHighs);
+    },
     ready() { return buf.length >= period; },
   };
 }
