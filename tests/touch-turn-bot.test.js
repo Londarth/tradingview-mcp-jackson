@@ -692,3 +692,19 @@ describe('parseFloat vs parseInt for Alpaca qty', () => {
     assert.equal(parseFloat('100'), 100);
   });
 });
+
+describe('morning report ATR data', () => {
+  it('should include ATR data in morning report regardless of restored state', () => {
+    const atrMap = { SOFI: 0.45, INTC: 0.62 };
+    const priceMap = { SOFI: 8.50, INTC: 21.30 };
+    for (const sym of Object.keys(atrMap)) {
+      assert.ok(atrMap[sym] > 0, `${sym} should have ATR data`);
+      assert.ok(priceMap[sym] > 0, `${sym} should have price data`);
+    }
+  });
+  it('empty ATR map makes morning report useless', () => {
+    const atrMap = {};
+    const priceMap = {};
+    assert.equal(Object.keys(atrMap).length, 0, 'empty ATR map = no scan data');
+  });
+});

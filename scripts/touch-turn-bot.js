@@ -487,12 +487,10 @@ async function runBot() {
   // Write initial snapshot (reuse account we just fetched)
   await writeSnapshot();
 
-  // Fetch daily ATRs for universe (unless fully restored)
+  // Fetch daily ATRs for universe (always — needed for morning report even on crash recovery)
   let atrMap = {}, priceMap = {};
-  if (!restored) {
-    log('Fetching daily ATRs...');
-    ({ atrMap, priceMap } = await fetchDailyATRs(UNIVERSE));
-  }
+  log('Fetching daily ATRs...');
+  ({ atrMap, priceMap } = await fetchDailyATRs(UNIVERSE));
 
   // Send morning report
   await sendMorningReport(account, atrMap, priceMap);
