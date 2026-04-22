@@ -7,12 +7,31 @@ export const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 export const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 export const TG_API = `https://api.telegram.org/bot${TG_TOKEN}`;
 
+const TG_MAX_LEN = 4096;
+
 let enabled = !!(TG_TOKEN && TG_CHAT_ID && TG_TOKEN !== 'your_telegram_bot_token');
 
 export function telegramEnabled() { return enabled; }
 
 export function escapeHtml(text) {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+export function splitMessage(text, maxLen) {
+  if (text.length <= maxLen) return [text];
+  const parts = [];
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLen) {
+      parts.push(remaining);
+      break;
+    }
+    let splitAt = remaining.lastIndexOf('\n', maxLen);
+    if (splitAt <= 0) splitAt = maxLen;
+    parts.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt);
+  }
+  return parts;
 }
 
 export const MAIN_BUTTONS = [[
@@ -23,20 +42,24 @@ export const MAIN_BUTTONS = [[
 
 export async function sendTelegram(text, { parseMode = 'HTML', buttons = null } = {}) {
   if (!enabled) return;
-  try {
-    const body = { chat_id: TG_CHAT_ID, text, parse_mode: parseMode };
-    if (buttons) body.reply_markup = { inline_keyboard: buttons };
-    const resp = await retry(() => fetch(`${TG_API}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }));
-    if (!resp.ok) {
-      const err = await resp.text();
-      console.error(`Telegram error: ${resp.status} ${err}`);
+  const messages = splitMessage(text, TG_MAX_LEN);
+  for (let i = 0; i < messages.length; i++) {
+    const isLast = i === messages.length - 1;
+    try {
+      const body = { chat_id: TG_CHAT_ID, text: messages[i], parse_mode: parseMode };
+      if (isLast && buttons) body.reply_markup = { inline_keyboard: buttons };
+      const resp = await retry(() => fetch(`${TG_API}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }));
+      if (!resp.ok) {
+        const err = await resp.text();
+        console.error(`Telegram error: ${resp.status} ${err}`);
+      }
+    } catch (e) {
+      console.error(`Telegram send failed: ${e.message}`);
     }
-  } catch (e) {
-    console.error(`Telegram send failed: ${e.message}`);
   }
 }
 

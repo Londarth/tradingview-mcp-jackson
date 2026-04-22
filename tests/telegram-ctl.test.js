@@ -7,7 +7,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCommand, isAuthorized } from '../scripts/telegram-ctl.js';
-import { escapeHtml } from '../scripts/telegram.js';
+import { escapeHtml, splitMessage } from '../scripts/telegram.js';
 
 describe('parseCommand', () => {
   it('extracts /start from plain command', () => {
@@ -147,5 +147,23 @@ describe('orphaned position commands', () => {
   it('parseCommand handles /close_orphaned and /keep_orphaned', () => {
     assert.equal(parseCommand('/close_orphaned'), '/close_orphaned');
     assert.equal(parseCommand('/keep_orphaned'), '/keep_orphaned');
+  });
+});
+
+describe('Telegram message splitting', () => {
+  it('does not split short messages', () => {
+    assert.deepEqual(splitMessage('hello', 10), ['hello']);
+  });
+  it('splits long messages at newlines', () => {
+    const msg = 'line1\nline2\nline3\nline4\nline5';
+    const parts = splitMessage(msg, 15);
+    assert.ok(parts.length > 1, 'should split into multiple parts');
+    assert.ok(parts.every(p => p.length <= 15), 'each part within limit');
+  });
+  it('hard-splits when no newline within limit', () => {
+    const msg = 'abcdefghijklmnopqrst';
+    const parts = splitMessage(msg, 10);
+    assert.ok(parts.length > 1);
+    assert.ok(parts.every(p => p.length <= 10));
   });
 });
