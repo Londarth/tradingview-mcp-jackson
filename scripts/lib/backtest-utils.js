@@ -35,7 +35,9 @@ function computeSharpe(equityCurve) {
     returns.push((equityCurve[i] - equityCurve[i - 1]) / equityCurve[i - 1]);
   }
   const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
-  const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length;
+  const variance = returns.length > 1
+    ? returns.reduce((s, r) => s + (r - mean) ** 2, 0) / (returns.length - 1)
+    : 0;
   const stdDev = Math.sqrt(variance);
   if (stdDev === 0) return 0;
   // Annualize: ~252 trading days, ~78 bars per day (5-min), so ~252 * 78 = 19656 bars/year
