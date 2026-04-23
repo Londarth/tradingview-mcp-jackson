@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 import { fetchBarsPaginated, norm5, normD, computeDailyATRMap } from './lib/alpaca-data.js';
-import { createSMA, createATR, createRSI, createSessionVWAP } from './lib/indicators.js';
+import { createSMA, createATR, createRSI, createSessionVWAP, createPivots, checkPivotRejection } from './lib/indicators.js';
 import { computeStats, combineSymbolResults } from './lib/backtest-utils.js';
 
 import { filterCandidate, rankCandidates, DEFAULT_FILTERS } from './lib/scanner.js';
@@ -309,6 +309,103 @@ function processBarTouchTurn(bar, state, hhmm, ind) {
   return { action: 'none' };
 }
 
+// ─── Strategy D: Pivot Reversion Scalper ───
+
+function createPivotRevertState() {
+  return {
+    pivots: null,
+    pivotSet: false,
+    tradesToday: 0,
+    cooldownBars: 0,
+    cooldownNeeded: 6,  // 6 x 5min bars = 30 min cooldown
+    recentBars: [],      // last 3 bars for rejection context
+  };
+}
+
+function processBarPivotRevert(bar, state, hhmm, ind) {
+  const { dailyATRMap, config } = ind;
+
+  // Only trade during active session (9:45 - 11:15)
+  if (hhmm < 945 || hhmm >= 1115) return { action: 'none' };
+
+  // Cooldown after last trade
+  if (state.cooldownBars > 0) {
+    state.cooldownBars--;
+    return { action: 'none' };
+  }
+
+  // Max trades per day
+  if (state.tradesToday >= (config.pivotMaxTrades || 4)) return { action: 'none' };
+
+  // Set pivots from prior day data (passed via ind.pivotLevels)
+  if (!state.pivotSet && ind.pivotLevels) {
+    state.pivots = ind.pivotLevels;
+    state.pivotSet = true;
+  }
+
+  if (!state.pivots) return { action: 'none' };
+
+  // Track recent bars for rejection context
+  state.recentBars.push(bar);
+  if (state.recentBars.length > 3) state.recentBars.shift();
+
+  const { P, R1, S1 } = state.pivots;
+  const dailyATR = dailyATRMap.get(getDateStr(bar.ts));
+  if (!dailyATR || dailyATR <= 0) return { action: 'none' };
+
+  // Only look at S1/R1 — stronger levels, more reliable rejections
+  const nearS1 = Math.abs(bar.close - S1) / dailyATR < 1.5;
+  const nearR1 = Math.abs(bar.close - R1) / dailyATR < 1.5;
+
+  // Check for bullish rejection at S1
+  if (nearS1) {
+    const rejection = checkPivotRejection({
+      bar,
+      level: S1,
+      side: 'support',
+      priorBars: state.recentBars.slice(0, -1),
+    });
+    if (rejection.rejected && rejection.direction === 'long') {
+      const stopMult = config.pivotStopAtrMult || 0.3;
+      const stop = S1 - dailyATR * stopMult;
+      const target = P;  // reversion target: pivot midpoint
+      const risk = bar.close - stop;
+      const reward = target - bar.close;
+      const minRR = config.pivotMinRR || 1.5;
+      if (risk > 0 && reward / risk >= minRR) {
+        state.tradesToday++;
+        state.cooldownBars = state.cooldownNeeded;
+        return { action: 'enter', side: 'long', stop, target, stopType: 'fixed' };
+      }
+    }
+  }
+
+  // Check for bearish rejection at R1
+  if (nearR1) {
+    const rejection = checkPivotRejection({
+      bar,
+      level: R1,
+      side: 'resistance',
+      priorBars: state.recentBars.slice(0, -1),
+    });
+    if (rejection.rejected && rejection.direction === 'short') {
+      const stopMult = config.pivotStopAtrMult || 0.3;
+      const stop = R1 + dailyATR * stopMult;
+      const target = P;  // reversion target: pivot midpoint
+      const risk = stop - bar.close;
+      const reward = bar.close - target;
+      const minRR = config.pivotMinRR || 1.5;
+      if (risk > 0 && reward / risk >= minRR) {
+        state.tradesToday++;
+        state.cooldownBars = state.cooldownNeeded;
+        return { action: 'enter', side: 'short', stop, target, stopType: 'fixed' };
+      }
+    }
+  }
+
+  return { action: 'none' };
+}
+
 // ─── Simulation engine ───
 
 function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap, scannerDays = null) {
@@ -357,6 +454,9 @@ function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap, scann
     atr5m.push(bar);
     rsi14.push(bar.close);
 
+    // Compute pivot levels from prior day's daily bar (for Strategy D)
+    const pivotLevels = config._priorDayBars?.get(barDate) || null;
+
     // Check exits first
     if (position) {
       const exit = checkExits(bar, position, config.sessionEnd, sessionVWAP.value());
@@ -390,6 +490,7 @@ function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap, scann
 
       const signal = processBarFn(bar, state, hhmm, {
         sessionVWAP, smaVolume, atr5m, rsi14, dailyATRMap, config,
+        pivotLevels,
       });
       if (signal.action === 'enter') {
         const entryEquity = equity;
@@ -424,36 +525,37 @@ function runBacktest(bars, processBarFn, stateInitFn, config, dailyATRMap, scann
 
 // ─── Reporting ───
 
-function printReport(a, b, c, symbol, startDate, endDate) {
+function printReport(a, b, c, d, symbol, startDate, endDate) {
   const usd = v => (v >= 0 ? '+' : '') + '$' + v.toFixed(2);
   const pct = v => v.toFixed(1) + '%';
   const num = v => v.toFixed(2);
   const sharpe = v => v === 0 ? 'N/A' : v.toFixed(2);
   const calmar = v => v === 0 ? 'N/A' : v.toFixed(2);
 
-  console.log('='.repeat(78));
+  console.log('='.repeat(96));
   console.log(`  BACKTEST: ${symbol}  (${startDate} to ${endDate})`);
-  console.log('='.repeat(78));
+  console.log('='.repeat(96));
   console.log('');
-  console.log(`${'Metric'.padEnd(22)}${'Aziz ORB+VWAP'.padStart(18)}${'VWAP Reversion'.padStart(18)}${'Touch & Turn'.padStart(18)}`);
-  console.log('-'.repeat(76));
-  console.log(`${'Total Trades'.padEnd(22)}${String(a.totalTrades).padStart(18)}${String(b.totalTrades).padStart(18)}${String(c.totalTrades).padStart(18)}`);
-  console.log(`${'Wins'.padEnd(22)}${String(a.wins).padStart(18)}${String(b.wins).padStart(18)}${String(c.wins).padStart(18)}`);
-  console.log(`${'Losses'.padEnd(22)}${String(a.losses).padStart(18)}${String(b.losses).padStart(18)}${String(c.losses).padStart(18)}`);
-  console.log(`${'Win Rate'.padEnd(22)}${pct(a.winRate).padStart(18)}${pct(b.winRate).padStart(18)}${pct(c.winRate).padStart(18)}`);
-  console.log(`${'Net P&L'.padEnd(22)}${usd(a.netPnL).padStart(18)}${usd(b.netPnL).padStart(18)}${usd(c.netPnL).padStart(18)}`);
-  console.log(`${'Final Equity'.padEnd(22)}${usd(a.finalEquity).padStart(18)}${usd(b.finalEquity).padStart(18)}${usd(c.finalEquity).padStart(18)}`);
-  console.log(`${'Avg Win'.padEnd(22)}${usd(a.avgWin).padStart(18)}${usd(b.avgWin).padStart(18)}${usd(c.avgWin).padStart(18)}`);
-  console.log(`${'Avg Loss'.padEnd(22)}${usd(a.avgLoss).padStart(18)}${usd(b.avgLoss).padStart(18)}${usd(c.avgLoss).padStart(18)}`);
-  console.log(`${'Max Drawdown'.padEnd(22)}${pct(a.maxDrawdown).padStart(18)}${pct(b.maxDrawdown).padStart(18)}${pct(c.maxDrawdown).padStart(18)}`);
-  console.log(`${'Profit Factor'.padEnd(22)}${num(a.profitFactor).padStart(18)}${num(b.profitFactor).padStart(18)}${num(c.profitFactor).padStart(18)}`);
-  console.log(`${'Sharpe Ratio'.padEnd(22)}${sharpe(a.sharpeRatio).padStart(18)}${sharpe(b.sharpeRatio).padStart(18)}${sharpe(c.sharpeRatio).padStart(18)}`);
-  console.log(`${'Calmar Ratio'.padEnd(22)}${calmar(a.calmarRatio).padStart(18)}${calmar(b.calmarRatio).padStart(18)}${calmar(c.calmarRatio).padStart(18)}`);
-  console.log('-'.repeat(76));
+  console.log(`${'Metric'.padEnd(22)}${'Aziz ORB+VWAP'.padStart(18)}${'VWAP Reversion'.padStart(18)}${'Touch & Turn'.padStart(18)}${'Pivot Revert'.padStart(18)}`);
+  console.log('-'.repeat(94));
+  console.log(`${'Total Trades'.padEnd(22)}${String(a.totalTrades).padStart(18)}${String(b.totalTrades).padStart(18)}${String(c.totalTrades).padStart(18)}${String(d.totalTrades).padStart(18)}`);
+  console.log(`${'Wins'.padEnd(22)}${String(a.wins).padStart(18)}${String(b.wins).padStart(18)}${String(c.wins).padStart(18)}${String(d.wins).padStart(18)}`);
+  console.log(`${'Losses'.padEnd(22)}${String(a.losses).padStart(18)}${String(b.losses).padStart(18)}${String(c.losses).padStart(18)}${String(d.losses).padStart(18)}`);
+  console.log(`${'Win Rate'.padEnd(22)}${pct(a.winRate).padStart(18)}${pct(b.winRate).padStart(18)}${pct(c.winRate).padStart(18)}${pct(d.winRate).padStart(18)}`);
+  console.log(`${'Net P&L'.padEnd(22)}${usd(a.netPnL).padStart(18)}${usd(b.netPnL).padStart(18)}${usd(c.netPnL).padStart(18)}${usd(d.netPnL).padStart(18)}`);
+  console.log(`${'Final Equity'.padEnd(22)}${usd(a.finalEquity).padStart(18)}${usd(b.finalEquity).padStart(18)}${usd(c.finalEquity).padStart(18)}${usd(d.finalEquity).padStart(18)}`);
+  console.log(`${'Avg Win'.padEnd(22)}${usd(a.avgWin).padStart(18)}${usd(b.avgWin).padStart(18)}${usd(c.avgWin).padStart(18)}${usd(d.avgWin).padStart(18)}`);
+  console.log(`${'Avg Loss'.padEnd(22)}${usd(a.avgLoss).padStart(18)}${usd(b.avgLoss).padStart(18)}${usd(c.avgLoss).padStart(18)}${usd(d.avgLoss).padStart(18)}`);
+  console.log(`${'Max Drawdown'.padEnd(22)}${pct(a.maxDrawdown).padStart(18)}${pct(b.maxDrawdown).padStart(18)}${pct(c.maxDrawdown).padStart(18)}${pct(d.maxDrawdown).padStart(18)}`);
+  console.log(`${'Profit Factor'.padEnd(22)}${num(a.profitFactor).padStart(18)}${num(b.profitFactor).padStart(18)}${num(c.profitFactor).padStart(18)}${num(d.profitFactor).padStart(18)}`);
+  console.log(`${'Sharpe Ratio'.padEnd(22)}${sharpe(a.sharpeRatio).padStart(18)}${sharpe(b.sharpeRatio).padStart(18)}${sharpe(c.sharpeRatio).padStart(18)}${sharpe(d.sharpeRatio).padStart(18)}`);
+  console.log(`${'Calmar Ratio'.padEnd(22)}${calmar(a.calmarRatio).padStart(18)}${calmar(b.calmarRatio).padStart(18)}${calmar(c.calmarRatio).padStart(18)}${calmar(d.calmarRatio).padStart(18)}`);
+  console.log('-'.repeat(94));
 
   printTradeLog('AZIZ ORB+VWAP', a.trades, a.initialCapital);
   printTradeLog('VWAP REVERSION', b.trades, b.initialCapital);
   printTradeLog('TOUCH & TURN', c.trades, c.initialCapital);
+  printTradeLog('PIVOT REVERT', d.trades, d.initialCapital);
 
   console.log('');
   console.log(`Capital: $${a.initialCapital} | Risk: 50% equity/trade (min $100) | Slippage: ${SLIPPAGE_BPS} bps | Commission: $${COMMISSION_PER_SHARE}/share`);
@@ -874,6 +976,22 @@ async function main() {
     useAtrFilter: true, atrPctThreshold: 0.25,
   };
 
+  const configD = {
+    sessionEnd: 1130, riskPct: 50, minPositionUSD: 100, initialCapital: 400,
+    pivotMinRR: 1.5, pivotMaxTrades: 4, pivotStopAtrMult: 0.3,
+  };
+
+  // Build prior-day bars map for pivot levels: dateStr -> prior day { high, low, close }
+  const priorDayBarsMap = new Map();
+  for (let i = 1; i < dailyBars.length; i++) {
+    const prevBar = dailyBars[i - 1];
+    const curDate = new Date(dailyBars[i].ts).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    const pivots = createPivots();
+    pivots.setDaily({ high: prevBar.high, low: prevBar.low, close: prevBar.close });
+    priorDayBarsMap.set(curDate, pivots.value());
+  }
+  configD._priorDayBars = priorDayBarsMap;
+
   console.log('Running Aziz ORB + VWAP backtest...');
   const resultA = runBacktest(bars, processBarStrategyA, createStrategyAState, configA, dailyATRMap);
 
@@ -883,7 +1001,10 @@ async function main() {
   console.log('Running Touch and Turn backtest...');
   const resultC = runBacktest(bars, processBarTouchTurn, createTouchTurnState, configC, dailyATRMap);
 
-  printReport(resultA, resultB, resultC, symbol, startDate, endDate);
+  console.log('Running Pivot Reversion backtest...');
+  const resultD = runBacktest(bars, processBarPivotRevert, createPivotRevertState, configD, dailyATRMap);
+
+  printReport(resultA, resultB, resultC, resultD, symbol, startDate, endDate);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

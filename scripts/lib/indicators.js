@@ -54,6 +54,71 @@ export function createRSI(period) {
   };
 }
 
+export function checkPivotRejection({ bar, level, side, priorBars = [] }) {
+  if (side === 'support') {
+    // Bullish rejection: price dips below support then closes back above
+    const pierced = bar.low <= level;
+    const closedAbove = bar.close > level;
+    const upperWick = bar.high - Math.max(bar.open, bar.close);
+    const lowerWick = Math.min(bar.open, bar.close) - bar.low;
+    const bodySize = Math.abs(bar.close - bar.open);
+    const isWick = pierced && closedAbove && lowerWick > bodySize * 0.5;
+
+    // Failed breakout: prior bar broke below, current bar snapped back
+    const failedBreakout = priorBars.length > 0 &&
+      priorBars.some(pb => pb.close < level) && closedAbove;
+
+    if (isWick) return { rejected: true, type: 'wick', direction: 'long' };
+    if (failedBreakout) return { rejected: true, type: 'failed_breakout', direction: 'long' };
+    return { rejected: false };
+  }
+
+  if (side === 'resistance') {
+    // Bearish rejection: price spikes above resistance then closes back below
+    const pierced = bar.high >= level;
+    const closedBelow = bar.close < level;
+    const upperWick = bar.high - Math.max(bar.open, bar.close);
+    const lowerWick = Math.min(bar.open, bar.close) - bar.low;
+    const bodySize = Math.abs(bar.close - bar.open);
+    const isWick = pierced && closedBelow && upperWick > bodySize * 0.5;
+
+    // Failed breakout: prior bar broke above, current bar snapped back
+    const failedBreakout = priorBars.length > 0 &&
+      priorBars.some(pb => pb.close > level) && closedBelow;
+
+    if (isWick) return { rejected: true, type: 'wick', direction: 'short' };
+    if (failedBreakout) return { rejected: true, type: 'failed_breakout', direction: 'short' };
+    return { rejected: false };
+  }
+
+  return { rejected: false };
+}
+
+export function createPivots() {
+  let prevDay = null;
+
+  function calcLevels(bar) {
+    const P = (bar.high + bar.low + bar.close) / 3;
+    return {
+      P,
+      R1: 2 * P - bar.low,
+      S1: 2 * P - bar.high,
+      R2: P + (bar.high - bar.low),
+      S2: P - (bar.high - bar.low),
+      R3: bar.high + 2 * (P - bar.low),
+      S3: bar.low - 2 * (bar.high - P),
+      midS1: ((2 * P - bar.high) + P) / 2,
+      midR1: (P + (2 * P - bar.low)) / 2,
+    };
+  }
+
+  return {
+    setDaily(bar) { prevDay = bar; },
+    value() { return prevDay ? calcLevels(prevDay) : null; },
+    ready() { return prevDay !== null; },
+  };
+}
+
 export function createSessionVWAP() {
   let cumTPV = 0, cumVol = 0;
   return {

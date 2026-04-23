@@ -41,6 +41,28 @@ export function filterCandidate({ symbol, dailyATR, price, prevClose, openPrice,
   return { passed: true, reason: `${isRed ? 'RED→LONG' : 'GREEN→SHORT'}` };
 }
 
+// ─── Pivot-specific microstructure filters ───
+
+export const DEFAULT_PIVOT_FILTERS = {
+  minPrice: 3,
+  maxPrice: 60,
+  maxAvgVolume: 10_000_000,  // 10M shares daily — filters out liquid names
+  minATRPct: 2.0,             // needs enough volatility for pivot tests
+  maxATRPct: 10.0,            // too volatile = noise, not structure
+};
+
+export function filterMicrostructure({ avgVolume, atrPct, price }, filters = DEFAULT_PIVOT_FILTERS) {
+  const f = { ...DEFAULT_PIVOT_FILTERS, ...filters };
+
+  if (avgVolume > f.maxAvgVolume) return { passed: false, reason: `avg volume ${avgVolume.toLocaleString()} > ${f.maxAvgVolume.toLocaleString()}` };
+  if (atrPct < f.minATRPct) return { passed: false, reason: `ATR% ${atrPct.toFixed(1)}% < ${f.minATRPct}%` };
+  if (atrPct > f.maxATRPct) return { passed: false, reason: `ATR% ${atrPct.toFixed(1)}% > ${f.maxATRPct}%` };
+  if (price < f.minPrice) return { passed: false, reason: `price $${price.toFixed(2)} < $${f.minPrice}` };
+  if (price > f.maxPrice) return { passed: false, reason: `price $${price.toFixed(2)} > $${f.maxPrice}` };
+
+  return { passed: true, reason: 'pivot-suitable' };
+}
+
 // Rank candidates by composite score. Each factor is normalized to 0-100 within the group.
 export function rankCandidates(candidates, weights = DEFAULT_WEIGHTS) {
   if (candidates.length === 0) return [];
