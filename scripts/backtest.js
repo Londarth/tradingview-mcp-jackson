@@ -7,7 +7,7 @@ import { computeStats, combineSymbolResults } from './lib/backtest-utils.js';
 import { filterCandidate, rankCandidates, DEFAULT_FILTERS } from './lib/scanner.js';
 import { getHHMM_ET, getDateStr } from './lib/time.js';
 
-const SCANNER_UNIVERSE = (process.env.UNIVERSE || 'SOFI,INTC,Z,DAL,RIVN,SBUX,CCL,DIS,F,GM,PLTR,SNAP')
+const SCANNER_UNIVERSE = (process.env.UNIVERSE || 'PLTR,LCID,SOFI,MARA,BTDR,DKNG,QS,SMR,UEC,IONQ,NCLH,SOUN,CLSK')
   .split(',').map(s => s.trim()).filter(Boolean);
 
 // Cost model

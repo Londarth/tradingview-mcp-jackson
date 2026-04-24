@@ -46,8 +46,8 @@ export function filterCandidate({ symbol, dailyATR, price, prevClose, openPrice,
 export const DEFAULT_PIVOT_FILTERS = {
   minPrice: 3,
   maxPrice: 60,
-  maxAvgVolume: 10_000_000,  // 10M shares daily — filters out liquid names
-  minATRPct: 2.0,             // needs enough volatility for pivot tests
+  maxAvgVolume: 5_000_000,  // 5M shares daily — filters out very liquid names
+  minATRPct: 4.0,             // KEY GATE: all 4 winners have ATR% >= 4.0%
   maxATRPct: 10.0,            // too volatile = noise, not structure
 };
 

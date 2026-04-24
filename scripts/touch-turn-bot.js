@@ -34,12 +34,22 @@ const CONFIG = {
   maxEquityPct: parseFloat(process.env.MAX_EQUITY_PCT) || 30,
   unfilledTimeoutMin: parseInt(process.env.UNFILLED_TIMEOUT_MIN, 10) || 15,
   apiTimeoutMs: parseInt(process.env.API_TIMEOUT_MS, 10) || 30000,
+  maxSlippageBps: parseFloat(process.env.MAX_SLIPPAGE_BPS) || 75,      // reject fills with worse slippage
+  cooldownStoppedOutMin: parseInt(process.env.COOLDOWN_STOPPED_MIN, 10) || 60,   // cooldown after stop-out
+  cooldownUnfilledMin: parseInt(process.env.COOLDOWN_UNFILLED_MIN, 10) || 30,    // cooldown after unfilled timeout
+  cooldownSlippageMin: parseInt(process.env.COOLDOWN_SLIPPAGE_MIN, 10) || 240,   // cooldown after bad fill (rest of session)
+  staleLimitReplaceMin: parseInt(process.env.STALE_LIMIT_REPLACE_MIN, 10) || 3,  // seconds to wait before replacing stale limit
+  rollingWindowBars: parseInt(process.env.ROLLING_WINDOW_BARS, 10) || 3,         // bars for rolling range in re-scan
 };
 
 // Multi-position tracking: symbol -> { orderId, side, entryPrice, stopPrice, targetPrice, qty, status, fillPrice, pnl }
 const activePositions = new Map();
 let isShuttingDown = false;
 let dailyPnl = 0;
+
+// ─── Symbol cooldown tracking ───
+// Map<symbol, { reason: 'stopped_out'|'unfilled'|'slippage', until: Date }>
+const symbolCooldowns = new Map();
 
 // ─── Snapshot debounce cache ───
 let lastSnapshotData = null;
@@ -60,6 +70,26 @@ const SNAPSHOT_FILE = path.join(__dirname, 'account-snapshot.json');
 const STATE_FILE = path.join(__dirname, 'bot-state.json');
 const ORPHANED_FILE = path.join(__dirname, 'orphaned-positions.json');
 const WATCHLIST_FILE = process.env.WATCHLIST_PATH || path.join(__dirname, 'watchlist.json');
+
+// ─── Cooldown helper ───
+function isOnCooldown(sym) {
+  const cd = symbolCooldowns.get(sym);
+  if (!cd) return false;
+  if (Date.now() >= cd.until.getTime()) {
+    symbolCooldowns.delete(sym);
+    return false;
+  }
+  return true;
+}
+
+function setCooldown(sym, reason) {
+  const minutes = reason === 'stopped_out' ? CONFIG.cooldownStoppedOutMin
+    : reason === 'unfilled' ? CONFIG.cooldownUnfilledMin
+    : CONFIG.cooldownSlippageMin;
+  const until = new Date(Date.now() + minutes * 60000);
+  symbolCooldowns.set(sym, { reason, until });
+  log(`${sym}: ⏳ Cooldown (${reason}) until ${until.toLocaleTimeString('en-US', { timeZone: 'America/New_York' })}`, 'trade');
+}
 
 // ─── Logging ───
 const tradeLog = [];
@@ -229,8 +259,10 @@ async function fetchDailyATRs(symbols) {
   return { atrMap, priceMap };
 }
 
-// ─── Fetch today's opening range (first 3 five-min bars) ───
-async function fetchOpeningRange(symbol) {
+// ─── Fetch opening range or rolling recent range ───
+// mode='opening': first 3 bars of day (9:30-9:45) — for initial entry
+// mode='rolling': last N bars before now — for re-scan entries
+async function fetchOpeningRange(symbol, mode = 'opening') {
   const today = getTodayStr();
   const headers = {
     'APCA-API-KEY-ID': process.env.ALPACA_API_KEY,
@@ -238,30 +270,49 @@ async function fetchOpeningRange(symbol) {
   };
 
   try {
-    // Fetch bars starting from 9:30 today
-    const start = `${today}T09:30:00-04:00`;
-    const end = `${today}T09:50:00-04:00`;
-    const url = `https://data.alpaca.markets/v2/stocks/bars?symbols=${symbol}&timeframe=5Min&start=${start}&end=${end}&limit=5&feed=iex`;
+    let start, end, numBars;
+    if (mode === 'rolling') {
+      // Fetch last 6 bars (30 min lookback), use last CONFIG.rollingWindowBars
+      const now = new Date();
+      const lookbackMin = 35; // fetch 35 min of bars to ensure we get enough
+      const startDate = new Date(now.getTime() - lookbackMin * 60000);
+      start = startDate.toISOString();
+      end = now.toISOString();
+      numBars = 6; // fetch extra to ensure we have enough after market-open filter
+    } else {
+      // Original: first 3 five-min bars (9:30-9:45)
+      start = `${today}T09:30:00-04:00`;
+      end = `${today}T09:50:00-04:00`;
+      numBars = 5;
+    }
+
+    const url = `https://data.alpaca.markets/v2/stocks/bars?symbols=${symbol}&timeframe=5Min&start=${start}&end=${end}&limit=${numBars}&feed=iex`;
     const resp = await retry(() => fetch(url, { headers, signal: AbortSignal.timeout(CONFIG.apiTimeoutMs) }));
     if (!resp.ok) throw new Error(`Alpaca API ${resp.status}: ${await resp.text().catch(() => 'unknown')}`);
     const data = await resp.json();
     const rawBars = data.bars?.[symbol] || [];
 
-    if (rawBars.length < 3) {
-      log(`${symbol}: Only ${rawBars.length} bars, need 3 for opening range`);
+    const windowSize = mode === 'rolling' ? CONFIG.rollingWindowBars : 3;
+
+    if (rawBars.length < windowSize) {
+      log(`${symbol}: Only ${rawBars.length} bars, need ${windowSize} for ${mode} range`);
       return null;
     }
 
-    const bars = rawBars.slice(0, 3);
+    // Use the last windowSize bars for rolling, first 3 for opening
+    const bars = mode === 'rolling'
+      ? rawBars.slice(-windowSize)
+      : rawBars.slice(0, windowSize);
+
     const high = Math.max(...bars.map(b => b.h));
     const low = Math.min(...bars.map(b => b.l));
     const open = bars[0].o;
-    const close = bars[2].c;
+    const close = bars[bars.length - 1].c;
     const range = high - low;
 
     return { high, low, open, close, range, isRed: close < open, isGreen: close > open };
   } catch (err) {
-    log(`${symbol} opening range fetch error: ${err.message}`, 'error');
+    log(`${symbol} ${mode} range fetch error: ${err.message}`, 'error');
     return null;
   }
 }
@@ -279,7 +330,7 @@ function readWatchlist() {
   } catch (e) { /* no watchlist file */ }
   return null;
 }
-async function scanCandidates(atrMap, priceMap) {
+async function scanCandidates(atrMap, priceMap, rangeMode = 'opening') {
   const candidates = [];
 
   const filteredSymbols = UNIVERSE.filter(sym => {
@@ -288,11 +339,16 @@ async function scanCandidates(atrMap, priceMap) {
       log(`${sym}: Skipped — ATR $${dailyATR?.toFixed(2) ?? 'N/A'} < $${CONFIG.minATR}`);
       return false;
     }
+    if (isOnCooldown(sym)) {
+      const cd = symbolCooldowns.get(sym);
+      log(`${sym}: Skipped — cooldown (${cd.reason}) until ${cd.until.toLocaleTimeString('en-US', { timeZone: 'America/New_York' })}`);
+      return false;
+    }
     return true;
   });
 
   const rangeResults = await Promise.allSettled(
-    filteredSymbols.map(async (sym) => ({ sym, range: await fetchOpeningRange(sym) }))
+    filteredSymbols.map(async (sym) => ({ sym, range: await fetchOpeningRange(sym, rangeMode) }))
   );
 
   for (const result of rangeResults) {
@@ -492,7 +548,8 @@ async function runBot() {
   log(`Window: 9:45–${CONFIG.sessionEnd} ET | Hard exit: ${CONFIG.hardExit} ET`);
   log(`Daily loss limit: ${CONFIG.dailyLossLimitPct}% | Max equity at risk: ${CONFIG.maxEquityPct}%`);
   if (CONFIG.riskPct > 0) log(`Risk-based sizing: ${CONFIG.riskPct}% equity risk per trade`);
-  log(`Unfilled timeout: ${CONFIG.unfilledTimeoutMin} min | API timeout: ${CONFIG.apiTimeoutMs} ms`);
+  log(`Slippage guard: ${CONFIG.maxSlippageBps} bps | Cooldown: stopped=${CONFIG.cooldownStoppedOutMin}min, unfilled=${CONFIG.cooldownUnfilledMin}min, slippage=${CONFIG.cooldownSlippageMin}min`);
+  log(`Unfilled timeout: ${CONFIG.unfilledTimeoutMin} min (replace with market) | API timeout: ${CONFIG.apiTimeoutMs} ms`);
   log(`Telegram: ${telegramEnabled() ? 'ON' : 'OFF'}`);
   log('═'.repeat(60));
 
@@ -688,13 +745,43 @@ async function runBot() {
       anyActive = true;
 
       if (pos.status === 'pending') {
-        // Unfilled order timeout: cancel if older than threshold
+        // Unfilled order timeout: cancel + replace with market order if still within session
         const ageMin = (Date.now() - (pos.placedAt || 0)) / 60000;
         if (!DRY_RUN && pos.orderId && pos.orderId !== 'dry-run' && ageMin >= CONFIG.unfilledTimeoutMin) {
           try {
             await retry(() => alpaca.cancelOrder(pos.orderId));
             log(`${sym}: Cancelled unfilled order (timeout ${ageMin.toFixed(0)} min)`, 'trade');
-            pos.status = 'closed';
+            setCooldown(sym, 'unfilled');
+            // Replace with market order if we're still within session time
+            if (currentTime < CONFIG.sessionEnd) {
+              log(`${sym}: Replacing stale limit with market order...`);
+              try {
+                const marketOrder = await retry(() => alpaca.createOrder({
+                  symbol: sym,
+                  qty: pos.qty,
+                  side: pos.side,
+                  type: 'market',
+                  time_in_force: 'day',
+                }));
+                pos.orderId = marketOrder.id;
+                pos.entryPrice = pos.side === 'long' ? pos.entryPrice : pos.entryPrice; // will update on fill
+                pos.status = 'pending';
+                pos.placedAt = Date.now();
+                pos.replacedWithMarket = true;
+                log(`${sym}: Market order placed (order ${marketOrder.id})`, 'trade');
+                await sendTelegram(
+                  `⚡ ${sym}: Replaced stale limit → market order\n` +
+                  `Side: ${pos.side} | Qty: ${pos.qty}\n` +
+                  `Stop: $${pos.stopPrice} | Target: $${pos.targetPrice}`,
+                  { parseMode: 'HTML' }
+                );
+              } catch (mErr) {
+                log(`${sym}: Market order replace failed: ${mErr.message}`, 'error');
+                pos.status = 'closed';
+              }
+            } else {
+              pos.status = 'closed';
+            }
             persistState();
             continue;
           } catch (e) {
@@ -729,8 +816,34 @@ async function runBot() {
             }
             // Slippage tracking
             const slippage = pos.fillPrice - pos.entryPrice;
-            const slippageBps = (slippage / pos.entryPrice) * 10000;
-            log(`${sym}: FILLED at $${pos.fillPrice.toFixed(2)} (slippage: ${slippage >= 0 ? '+' : ''}$${slippage.toFixed(4)} / ${slippageBps.toFixed(1)} bps)`, 'trade');
+            const slippageBps = Math.abs((slippage / pos.entryPrice) * 10000);
+            const adverseSlippage = (pos.side === 'short' ? slippage > 0 : slippage < 0);
+            log(`${sym}: FILLED at $${pos.fillPrice.toFixed(2)} (slippage: ${slippage >= 0 ? '+' : ''}$${slippage.toFixed(4)} / ${slippageBps.toFixed(1)} bps${adverseSlippage ? ' ⚠️ ADVERSE' : ''})`, 'trade');
+
+            // ── Slippage guard: reject fills with excessive adverse slippage ──
+            if (adverseSlippage && slippageBps > CONFIG.maxSlippageBps) {
+              log(`${sym}: 🚫 SLIPPAGE GUARD triggered — ${slippageBps.toFixed(0)} bps exceeds ${CONFIG.maxSlippageBps} bps limit. Liquidating position.`, 'error');
+              await tgError(`${sym} slippage guard: ${slippageBps.toFixed(0)} bps adverse fill — liquidating immediately`);
+              try {
+                // Cancel bracket legs (stop + target), then market close
+                const orderDetail = await retry(() => alpaca.getOrder(pos.orderId));
+                const legs = orderDetail.legs || [];
+                for (const legId of legs) {
+                  try { await retry(() => alpaca.cancelOrder(legId)); } catch {}
+                }
+                const closeSide = pos.side === 'long' ? 'sell' : 'buy';
+                await retry(() => alpaca.closePosition(sym));
+                log(`${sym}: Slippage guard — position liquidated via market close`, 'trade');
+              } catch (closeErr) {
+                log(`${sym}: Slippage guard liquidation failed: ${closeErr.message} — will rely on hard exit`, 'error');
+              }
+              pos.status = 'closed';
+              pos.pnl = 0; // will be updated when we reconcile
+              setCooldown(sym, 'slippage');
+              persistState();
+              continue;
+            }
+
             await writeSnapshot();
             persistState();
           } else if (['canceled', 'rejected', 'expired'].includes(order.status)) {
@@ -781,6 +894,10 @@ async function runBot() {
             dailyPnl += pos.pnl;
             pos.status = 'closed';
             log(`${sym}: Position closed (by stop/target) — P&L: $${pos.pnl.toFixed(2)}`, 'trade');
+            // Cooldown after stop-out (losing trade)
+            if (pos.pnl < 0) {
+              setCooldown(sym, 'stopped_out');
+            }
             persistState();
 
             // Daily loss limit check
@@ -804,9 +921,67 @@ async function runBot() {
 
     if (isShuttingDown) break;
 
-    if (!anyActive) {
-      log('All positions closed — exiting early');
-      break;
+    if (!anyActive && currentTime < CONFIG.sessionEnd) {
+      // All orders cancelled/closed — re-scan for new candidates using rolling range
+      log('All positions closed — re-scanning for new candidates (rolling range)...');
+      try {
+        const { atrMap: freshATR, priceMap: freshPrices } = await fetchDailyATRs(UNIVERSE);
+        const freshCandidates = await scanCandidates(freshATR, freshPrices, 'rolling');
+        if (freshCandidates && freshCandidates.length > 0) {
+          log(`Re-scan found ${freshCandidates.length} candidate(s): ${freshCandidates.map(c => c.sym).join(', ')}`);
+          const acct = await retry(() => alpaca.getAccount());
+          const bal = parseFloat(acct.portfolio_value);
+          let eqRisk = 0;
+          const trades = [];
+          for (const c of freshCandidates) {
+            const { sym, range, dailyATR } = c;
+            const side = range.isRed ? 'long' : 'short';
+            let entryPrice, targetPrice, stopPrice;
+            if (side === 'long') {
+              entryPrice = range.low;
+              targetPrice = range.low + CONFIG.targetFib * range.range;
+              stopPrice = range.low - (CONFIG.targetFib * range.range) / CONFIG.rrRatio;
+            } else {
+              entryPrice = range.high;
+              targetPrice = range.high - CONFIG.targetFib * range.range;
+              stopPrice = range.high + (CONFIG.targetFib * range.range) / CONFIG.rrRatio;
+            }
+            const thisRiskPct = CONFIG.positionPct / 100;
+            if ((eqRisk + thisRiskPct) * 100 > CONFIG.maxEquityPct) continue;
+            let qty;
+            if (CONFIG.riskPct > 0) {
+              const riskDollars = bal * (CONFIG.riskPct / 100);
+              qty = Math.max(1, Math.floor(riskDollars / Math.abs(entryPrice - stopPrice)));
+            } else {
+              const posVal = Math.max(bal * CONFIG.positionPct / 100, CONFIG.minPositionUSD);
+              qty = Math.max(1, Math.floor(posVal / entryPrice));
+            }
+            if (qty * entryPrice < CONFIG.minPositionUSD) continue;
+            const order = await placeBracketOrder(sym, side, entryPrice, stopPrice, targetPrice, qty);
+            if (order) {
+              activePositions.set(sym, {
+                orderId: order.id, side, entryPrice, stopPrice, targetPrice, qty,
+                status: DRY_RUN ? 'dry_run' : 'pending',
+                fillPrice: null, pnl: null, placedAt: Date.now(),
+              });
+              eqRisk += thisRiskPct;
+              trades.push({ sym, side, price: entryPrice, stop: stopPrice, target: targetPrice, rr: order.rr, qty });
+              persistState();
+            }
+          }
+          if (trades.length > 0) {
+            await tgTradeSignalsBatch(trades, { dryRun: DRY_RUN });
+          }
+          continue; // go back to monitoring
+        }
+      } catch (e) {
+        log(`Re-scan error: ${e.message}`, 'error');
+      }
+      log('Re-scan found no candidates — will monitor until hard exit');
+    }
+
+    if (!anyActive && currentTime >= CONFIG.sessionEnd) {
+      log('All positions closed after session end — waiting for hard exit');
     }
 
     // Log portfolio state each cycle
