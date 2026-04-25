@@ -1,6 +1,10 @@
 # Scalp Bot
 
-Alpaca trading bot with Telegram control and backtesting. Implements the Touch & Turn scalper strategy — one trade per day, fully automated on a VPS.
+Alpaca trading bot with two strategies, Telegram control, and backtesting. Runs on a VPS, controlled via Telegram commands, started by cron on trading days.
+
+**Strategies:**
+- **Touch & Turn** — Opening range breakout scalper. One trade per day per symbol.
+- **Pivot Reversion** — Fades S1/R1 pivot rejections on thin-orderbook stocks. Up to 3 trades per day.
 
 ---
 
@@ -8,12 +12,13 @@ Alpaca trading bot with Telegram control and backtesting. Implements the Touch &
 
 ```
 Phone (Telegram) ←→ VPS
-                       ├── telegram-ctl.js  (always-on, polls for commands)
+                       ├── telegram-ctl.js  (always-on systemd service)
                        ├── PM2 process manager
-                       │     └── touch-turn-bot.js (runs during session hours)
+                       │     ├── touch-turn-bot.js   (T&T: 9:25–11:30 ET)
+                       │     └── pivot-revert-bot.js  (Pivot: 9:45–11:30 ET)
                        └── cron
-                             ├── 9:25 AM ET → start bot
-                             └── 11:30 AM ET → stop bot
+                             ├── 8:55 ET → pre-market-scan.js
+                             └── 9:25 ET → start bots
 ```
 
 ---
@@ -29,9 +34,18 @@ Phone (Telegram) ←→ VPS
 7. Cancel unfilled orders at 11:00 ET, close open positions at 11:30 ET
 8. One trade per day max
 
-**Universe**: SOFI, INTC, Z, DAL, RIVN, SBUX, CCL, DIS, F, GM, PLTR, SNAP (configurable via `UNIVERSE` env var)
+---
 
-**Position sizing**: 10% of account balance per trade (configurable via `POSITION_PCT` env var)
+## Pivot Reversion Strategy
+
+1. Compute floor trader pivots (P, R1-R3, S1-S3, midS1, midR1) from prior day H/L/C
+2. Filter stocks by microstructure: ATR% >= 4%, avg volume < 10M, price $3-$60
+3. Detect wick rejections and failed breakouts at S1/R1
+4. Enter long on S1 rejection (target P), short on R1 rejection (target P)
+5. Stop-loss just beyond pivot level (0.3× ATR)
+6. Min R:R of 1.5, max 3 trades/day per symbol, 30-min cooldown between entries
+
+**Confirmed edge** (PF >= 1.3): PLTR, SMR, LCID, SOFI, BTDR, DKNG, QS
 
 ---
 
@@ -56,39 +70,25 @@ cp .env.example .env
 Required env vars:
 
 ```
-ALPACA_API_KEY=...
-ALPACA_SECRET_KEY=...
+ALPACA_API_KEY=***
+ALPACA_SECRET_KEY=***
 ALPACA_PAPER=true
-TELEGRAM_BOT_TOKEN=...
+TELEGRAM_BOT_TOKEN=***
 TELEGRAM_CHAT_ID=...
-```
-
-Optional strategy parameters (with defaults):
-
-```
-UNIVERSE=SOFI,INTC,Z,DAL,RIVN,SBUX,CCL,DIS,F,GM,PLTR,SNAP
-POSITION_PCT=10
-ATR_PCT_THRESHOLD=0.25
-TARGET_FIB=0.618
-RR_RATIO=2.0
-SESSION_END=1100
-HARD_EXIT=1130
-POLL_INTERVAL_MS=30000
-MIN_ATR=0.50
-MIN_POSITION_USD=100
-DRY_RUN=false
 ```
 
 ### 3. Run locally (paper mode)
 
 ```bash
 node scripts/touch-turn-bot.js
+node scripts/pivot-revert-bot.js
 ```
 
 Or use PM2:
 
 ```bash
 pm2 start ecosystem.config.cjs --only touch-turn-bot
+pm2 start ecosystem.config.cjs --only pivot-revert-bot
 ```
 
 ---
@@ -99,8 +99,8 @@ Send commands to your Telegram bot from anywhere:
 
 | Command | Action |
 |---------|--------|
-| `/start` | Start the trading bot via PM2 |
-| `/stop` | Stop the trading bot |
+| `/start` | Start the T&T trading bot via PM2 |
+| `/stop` | Stop the T&T trading bot |
 | `/status` | Show bot status + recent activity |
 | `/help` | List available commands |
 
@@ -123,9 +123,10 @@ This installs Node.js, PM2, sets up systemd for the Telegram controller, and con
 ### Manual VPS management
 
 ```bash
-pm2 list                    # Show managed processes
-pm2 logs touch-turn-bot     # View bot logs
-pm2 describe touch-turn-bot # Detailed bot status
+pm2 list                         # Show managed processes
+pm2 logs touch-turn-bot          # T&T bot logs
+pm2 logs pivot-revert-bot        # Pivot bot logs
+pm2 describe touch-turn-bot      # T&T status
 sudo systemctl status scalp-bot-ctl  # Telegram controller status
 ```
 
@@ -137,14 +138,16 @@ sudo systemctl status scalp-bot-ctl  # Telegram controller status
 - **Graceful shutdown**: SIGINT/SIGTERM cancels open orders, closes positions past hard-exit time, saves logs
 - **Config validation**: Bot exits with a clear error if required env vars are missing
 - **Periodic log saving**: Trade log saved every 5 minutes during monitoring
+- **Orphan detection**: Positions not tracked by the bot trigger a Telegram warning with close/keep buttons
 
 ---
 
 ## Backtesting
 
 ```bash
-npm run backtest           # Day-trading strategies (Aziz ORB + Touch & Turn)
-npm run swing-backtest     # Swing trading strategies (CRSI2, IBS, Failed Breakout)
+npm run backtest            # Day-trading strategies (Aziz ORB, T&T, Pivot Reversion)
+npm run scan                # Scanner-mode backtest (full universe, realistic sim)
+npm run swing-backtest      # Swing trading strategies (CRSI2, IBS, Failed Breakout)
 ```
 
 ---
@@ -155,7 +158,7 @@ npm run swing-backtest     # Swing trading strategies (CRSI2, IBS, Failed Breako
 |------|---------|
 | `.env` | All secrets and config (gitignored). See `.env.example` for full list. |
 | `.env.example` | Template documenting all required and optional env vars |
-| `ecosystem.config.cjs` | PM2 process definition for touch-turn-bot |
+| `ecosystem.config.cjs` | PM2 process definitions for both bots |
 
 All strategy parameters are configurable via env vars with sensible defaults. No code edits needed.
 
@@ -166,15 +169,20 @@ All strategy parameters are configurable via env vars with sensible defaults. No
 ```
 scalp-bot/
 ├── scripts/
-│   ├── touch-turn-bot.js       # Main trading bot
+│   ├── touch-turn-bot.js       # T&T trading bot
+│   ├── pivot-revert-bot.js     # Pivot reversion trading bot
+│   ├── pivot-discover.js       # Pivot stock discovery scanner
 │   ├── telegram.js             # Unified Telegram module
 │   ├── telegram-ctl.js         # Telegram command listener (VPS)
 │   ├── lib/
 │   │   ├── retry.js            # Retry/backoff utility
-│   │   ├── indicators.js      # SMA, ATR, RSI, VWAP
+│   │   ├── indicators.js       # SMA, ATR, RSI, VWAP, Pivots, PivotRejection
 │   │   ├── alpaca-data.js     # Fetch bars, normalize, ATR map
-│   │   └── backtest-utils.js  # Stats, combine results, calcQty
-│   ├── backtest.js             # Day-trading backtester
+│   │   ├── backtest-utils.js  # Stats, combine results, calcQty
+│   │   ├── scanner.js          # Scanner filters + microstructure filter
+│   │   └── time.js             # ET timezone helpers
+│   ├── backtest.js             # Day-trading backtester (4 strategies)
+│   ├── pre-market-scan.js     # Pre-market scanner
 │   ├── swing-backtest.js       # Swing trading backtester
 │   ├── setup-vps.sh            # VPS provisioning script
 │   └── scalp-bot-ctl.service   # Systemd unit file template
@@ -182,10 +190,13 @@ scalp-bot/
 │   ├── touch-turn-bot.test.js  # Bot core logic tests
 │   ├── telegram-ctl.test.js   # Telegram controller tests
 │   ├── indicators.test.js      # Indicator unit tests
+│   ├── scanner.test.js         # Scanner/microstructure tests
 │   └── retry.test.js           # Retry/backoff tests
 ├── skills/
 │   └── scalp-bot/SKILL.md      # Claude Code skill
-├── ecosystem.config.cjs        # PM2 config
+├── docs/
+│   └── plans/                  # Implementation plans
+├── ecosystem.config.cjs        # PM2 config (2 bots)
 ├── .env.example                # Env var template
 └── .env                        # Credentials (gitignored)
 ```

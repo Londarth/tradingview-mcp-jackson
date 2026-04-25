@@ -609,3 +609,22 @@ Look for:
 
 **Files:**
 - Modify: `scripts/touch-turn-bot.js` (only if we go live later — skip for now)
+
+---
+
+## Implementation Status
+
+All tasks completed and deployed. Additional work done after the original plan:
+
+- **Live pivot bot** (`pivot-revert-bot.js`) — 709 lines, fully operational
+- **Pivot discovery scanner** (`pivot-discover.js`) — 210 lines, identifies pivot-suitable stocks
+- **Confirmed universe** — 13 stocks with PF >= 1.0, 7 with PF >= 1.3 (PLTR, SMR, LCID, SOFI, BTDR, DKNG, QS)
+- **Microstructure filter** — ATR% >= 4% is the strongest predictor of edge
+- **Scanner tests** — `tests/scanner.test.js` added
+- **Ecosystem config** — Updated to include both `touch-turn-bot` and `pivot-revert-bot` PM2 processes
+- **Pre-market improvements** — 7 patches applied (batch API calls, debounce snapshots, RSI fix, Calmar fix, etc.)
+
+### Key findings
+- ATR% >= 4% is the gate for pivot suitability; stocks below 3.5% ATR% don't work
+- S1/R1 rejections with mid-point targets (P) give best risk:reward
+- Original T&T universe mostly incompatible with pivot strategy (too liquid)

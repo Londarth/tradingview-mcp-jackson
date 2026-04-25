@@ -7,7 +7,7 @@ describe('filterMicrostructure', () => {
   it('accepts low-volume, high-volatility stock (WLD-like)', () => {
     const result = filterMicrostructure({
       avgVolume: 3000000,   // 3M avg daily vol — thin
-      atrPct: 3.5,          // 3.5% ATR — volatile
+      atrPct: 4.5,          // 4.5% ATR — volatile (must be >= 4.0% for DEFAULT_PIVOT_FILTERS)
       price: 12.50,         // in sweet spot
     });
     assert.equal(result.passed, true);
